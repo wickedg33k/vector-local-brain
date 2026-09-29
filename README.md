@@ -105,6 +105,18 @@ cloud dependency required (aside from an optional escalation hook).
 - **Stability tooling**: a health probe, a log receiver, and a
   build/deploy script with a last-known-good rollback image.
 
+## Screenshots
+
+### Coral vision on a real Vector frame
+First real frame from Vector's camera through the Coral Edge TPU (`efficientdet_lite1`, ~118 ms). It gets the office chair right at 70% and, adorably, tags Vector's own lift arm as a "chair".
+
+![Coral detection on a real Vector camera frame](docs/demo-coral-detection.jpg)
+
+### Dashboard: Coral section
+The `dashboard/` web app (mobile-friendly) showing Coral Edge TPU status, the latest robot captures with detection boxes drawn on, today's per-label tally, and per-model latency.
+
+<img src="docs/dashboard-coral-section.png" alt="Vector dashboard Coral section" width="390">
+
 ## Hardware used
 
 - A GPU host running Docker: 2× 16GB-class GPUs (one for the always-on
