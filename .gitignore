@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs / runtime state (never commit real ones)
+*.log
+*.pid
+mood.json
+state.json
+recent_observation.txt
+brain.log
+
+# Secrets
+.env
+*.env
+!*.env.example
+vector.env
+
+# Model / data dirs (documented, not vendored)
+coral/models/
+coral/captures/
+coral/test_images/
+dashboard/cache/
+dashboard/snapshots/
+
+# Editors / OS
+.DS_Store
+*.swp

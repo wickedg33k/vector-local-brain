@@ -1,0 +1,5 @@
+# Google Coral USB Accelerator - allow plugdev group rw access
+# Pre-firmware (before libedgetpu uploads firmware):
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a6e", ATTRS{idProduct}=="089a", MODE="0664", GROUP="plugdev"
+# Post-firmware (after re-enumeration):
+SUBSYSTEM=="usb", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="9302", MODE="0664", GROUP="plugdev"

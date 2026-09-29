@@ -1,0 +1,1 @@
+wirepod_vector_sdk==0.8.1

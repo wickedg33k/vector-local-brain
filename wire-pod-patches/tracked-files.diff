@@ -1,0 +1,2300 @@
+diff --git a/chipper/intent-data/en-US.json b/chipper/intent-data/en-US.json
+index 6e34eb4..9fedf1e 100755
+--- a/chipper/intent-data/en-US.json
++++ b/chipper/intent-data/en-US.json
+@@ -1,277 +1,656 @@
+ [
+-	{
+-		"name" : "intent_names_username_extend", 
+-		"keyphrases": ["name is", "native is", "names", "name's", "my name is" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_weather_extend", 
+-		"keyphrases" : ["weather", "whether", "the other", "the water", "no other", "weather forecast", "weather tomorrow", "whats the weather" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_names_ask", 
+-		"keyphrases" : ["my name", "who am", "who am i"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_eyecolor",
+-		"keyphrases" : ["eye color", "colo", "i call her", "i foller", "icolor", "ecce", "erior", "ichor", "agricola", "change", "oracular", "oracle", "set your eye color to"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_character_age", 
+-		"keyphrases" : ["older", "how old", "old are you", "old or yo", "how there you"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_explore_start", 
+-		"keyphrases" : ["start", "plor", "owing", "tailoring", "oding", "oring", "pling", "start exploring"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_charger", 
+-		"keyphrases" : ["charge", "home", "go to your", "church", "find your ch", "charger" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_sleep",
+-		"keyphrases" : ["flee", "sleep", "sheep", "go to sleep" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_noaudio",
+-		"keyphrases" : ["[blank_audio]", "[door opens]", "[sighs]" ],
+-		"requiresexact": true
+-	},
+-	{	
+-		"name": "intent_greeting_goodmorning", 
+-		"keyphrases" : ["morning", "mourning", "mooning", "it bore", "afternoon", "after noon", "after whom", "good morning" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_greeting_goodnight", 
+-		"keyphrases" : ["night", "might", "goodnight" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_greeting_goodbye", 
+-		"keyphrases" : ["good bye", "good by", "good buy", "goodbye" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_seasonal_happynewyear",
+-		"keyphrases" : ["fireworks", "new year", "happy new", "happy to", "have been", "i now you", "no year", "enee", "i never", "knew her", "hobhouse", "bennie" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_seasonal_happyholidays", 
+-		"keyphrases" : ["he holds", "christmas", "behold", "holiday" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_amazon_signin", 
+-		"keyphrases" : ["in intellect", "fine in electa", "in alex", "ing alex", "in an elect", "to alex", "in angelica", "up alexa", "sign in to alexa" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_amazon_signin", 
+-		"keyphrases" : ["in outlet", "i now of elea", "out alexa", "out of ale" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_forward",
+-		"keyphrases" : ["forward", "for ward", "for word", "move forward", "forwards" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnaround", 
+-		"keyphrases" : ["around", "one eighty", "one ate he", "turn around" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnleft", 
+-		"keyphrases" : ["rn left", "go left", "e left", "ed left", "ernest" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnright", 
+-		"keyphrases" : ["rn right", "go right", "e right", "ernie", "credit", "ed right" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_rollcube",
+-		"keyphrases" : ["roll cu", "roll your cu", "all your cu", "roll human", "yorke", "old your he", "roll your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_popawheelie", 
+-		"keyphrases" : ["pop a w", "polwhele", "olwen", "i wieland", "do a wheel", "doorstone", "thibetan", "powell", "welst", "a wheel", "willie", "a really", "o' billy", "pop a wheelie", "do a wheel stand" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_fistbump", 
+-		"keyphrases" : ["this pomp", "this pump", "bump", "fistb", "fistf", "this book", "pisto", "with pomp", "fison", "first", "fifth", "were fifteen", "if bump", "wisdom", "this bu", "fist bomb", "fist ball", "this ball", "system", "fistbump" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_play_blackjack", 
+-		"keyphrases" : ["black", "cards", "game", "play blackjack" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_imperative_affirmative",
+-		"keyphrases" : ["yes", "correct", "sure", "yes please" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_negative", 
+-		"keyphrases" : ["no", "dont", "no thanks" ],
+-		"requiresexact": true
+-	},
+-	{	
+-		"name": "intent_photo_take_extend", 
+-		"keyphrases" : ["photo", "foto", "selby", "capture", "picture", "take a photo of me" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_praise", 
+-		"keyphrases" : ["good", "awesome", "also", "as some", "of them", "battle", "t rob", "the ro", "amazing", "woodcourt", "good robot" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_abuse",
+-		"keyphrases" : ["bad", "that ro", "ad ro", "a root", "hate", "horrible", "bad robot" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_apologize", 
+-		"keyphrases" : ["sorry", "apologize", "apologise", "the tory", "nevermind", "never mind", "im sorry" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_backup", 
+-		"keyphrases" : ["back", "back up", "backwards","beck"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumedown",
+-		"keyphrases" : ["all you down", "volume down", "down volume", "down the volume", "quieter", "turn the volume down" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumeup", 
+-		"keyphrases" : ["all you up", "volume up", "up volume", "up the volume", "louder" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_lookatme", 
+-		"keyphrases" : ["stare", "at me" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumelevel_extend",
+-		"keyphrases" : ["all you", "volume", "loudness" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_shutup", 
+-		"keyphrases" : ["shut up" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_greeting_hello", 
+-		"keyphrases" : ["hello", "our you", "follow", "for you", "far you", "how about you", "how are you", "the low", "the loo", "our are you" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_come", 
+-		"keyphrases" : ["come to me", "come here" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_love",
+-		"keyphrases" : ["love you", "dove you", "i love you" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_knowledge_promptquestion", 
+-		"keyphrases" : ["question", "weston", "i have a question", "conversation", "lets talk", "let's talk" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_checktimer", 
+-		"keyphrases" : ["check timer", "check the timer", "check the time her", "check time her", "check time her", "check time of her", "checked the timer", "checked the time her", "checked the time of her" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_global_stop_extend", 
+-		"keyphrases" : ["up the timer", "stop timer", "cancel the", "cancel timer", "stop clock", "stop be", "stopped t", "stopped be", "stopped at", "stop the" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_settimer_extend",
+-		"keyphrases" : ["timer", "time for", "time of for", "time or", "time of", "set a timer for" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_time", 
+-		"keyphrases" : ["time is it", "the time", "what time", "clock", "what time is it" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_quiet", 
+-		"keyphrases" : ["quiet", "stop", "be quiet" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_dance", 
+-		"keyphrases" : ["dance", "dancing", "thence", "dance to the beat", "the beat", "boogie", "to the music" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_pickupcube",
+-		"keyphrases" : ["pickup", "pick up" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_fetchcube", 
+-		"keyphrases" : ["fetch your cu", "fetch cu", "fetch the cu", "bring to me", "bring me", "bring me your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_findcube", 
+-		"keyphrases" : ["your cu", "the cu", "find your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_anytrick", 
+-		"keyphrases" : ["trick", "something cool", "some thing cool", "do a trick" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_message_recordmessage_extend",
+-		"keyphrases" : ["record" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_message_playmessage_extend", 
+-		"keyphrases" : ["play message", "play method", "play a message", "play a method" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_blackjack_hit", 
+-		"keyphrases" : ["hit"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_blackjack_stand", 
+-		"keyphrases" : ["stand", "stan" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_keepaway",
+-		"keyphrases": ["keepaway", "keep away", "play keepaway" ],
+-		"requiresexact": false
+-	}
++  {
++    "name": "intent_names_username_extend",
++    "keyphrases": [
++      "name is",
++      "native is",
++      "names",
++      "name's",
++      "my name is"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_weather_extend",
++    "keyphrases": [
++      "weather",
++      "whether",
++      "the other",
++      "the water",
++      "no other",
++      "weather forecast",
++      "weather tomorrow",
++      "whats the weather"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_names_ask",
++    "keyphrases": [
++      "my name",
++      "who am",
++      "who am i"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_eyecolor",
++    "keyphrases": [
++      "eye color",
++      "colo",
++      "i call her",
++      "i foller",
++      "icolor",
++      "ecce",
++      "erior",
++      "ichor",
++      "agricola",
++      "change",
++      "oracular",
++      "oracle",
++      "set your eye color to"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_character_age",
++    "keyphrases": [
++      "older",
++      "how old",
++      "old are you",
++      "old or yo",
++      "how there you"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_explore_start",
++    "keyphrases": [
++      "start",
++      "plor",
++      "owing",
++      "tailoring",
++      "oding",
++      "oring",
++      "pling",
++      "start exploring",
++      "explore mode",
++      "explorer mode",
++      "exploring mode",
++      "go explore",
++      "go exploring",
++      "free roam",
++      "go roam",
++      "roam around",
++      "wander",
++      "go wander",
++      "go play"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_system_charger",
++    "keyphrases": [
++      "charge",
++      "home",
++      "go to your",
++      "church",
++      "find your ch",
++      "charger"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_system_sleep",
++    "keyphrases": [
++      "flee",
++      "sleep",
++      "sheep",
++      "go to sleep"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_system_noaudio",
++    "keyphrases": [
++      "[blank_audio]",
++      "[door opens]",
++      "[sighs]"
++    ],
++    "requiresexact": true
++  },
++  {
++    "name": "intent_greeting_goodmorning",
++    "keyphrases": [
++      "morning",
++      "mourning",
++      "mooning",
++      "it bore",
++      "afternoon",
++      "after noon",
++      "after whom",
++      "good morning"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_greeting_goodnight",
++    "keyphrases": [
++      "night",
++      "might",
++      "goodnight"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_greeting_goodbye",
++    "keyphrases": [
++      "good bye",
++      "good by",
++      "good buy",
++      "goodbye"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_seasonal_happynewyear",
++    "keyphrases": [
++      "fireworks",
++      "new year",
++      "happy new",
++      "happy to",
++      "have been",
++      "i now you",
++      "no year",
++      "enee",
++      "i never",
++      "knew her",
++      "hobhouse",
++      "bennie"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_seasonal_happyholidays",
++    "keyphrases": [
++      "he holds",
++      "christmas",
++      "behold",
++      "holiday"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_amazon_signin",
++    "keyphrases": [
++      "in intellect",
++      "fine in electa",
++      "in alex",
++      "ing alex",
++      "in an elect",
++      "to alex",
++      "in angelica",
++      "up alexa",
++      "sign in to alexa"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_amazon_signin",
++    "keyphrases": [
++      "in outlet",
++      "i now of elea",
++      "out alexa",
++      "out of ale"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_forward",
++    "keyphrases": [
++      "forward",
++      "for ward",
++      "for word",
++      "move forward",
++      "forwards"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_turnaround",
++    "keyphrases": [
++      "turn around",
++      "one eighty",
++      "one ate he"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_turnleft",
++    "keyphrases": [
++      "rn left",
++      "go left",
++      "e left",
++      "ed left",
++      "ernest"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_turnright",
++    "keyphrases": [
++      "rn right",
++      "go right",
++      "e right",
++      "ernie",
++      "credit",
++      "ed right"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_rollcube",
++    "keyphrases": [
++      "roll cu",
++      "roll your cu",
++      "all your cu",
++      "roll human",
++      "yorke",
++      "old your he",
++      "roll your cube"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_popawheelie",
++    "keyphrases": [
++      "pop a w",
++      "polwhele",
++      "olwen",
++      "i wieland",
++      "do a wheel",
++      "doorstone",
++      "thibetan",
++      "powell",
++      "welst",
++      "a wheel",
++      "willie",
++      "a really",
++      "o' billy",
++      "pop a wheelie",
++      "do a wheel stand"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_fistbump",
++    "keyphrases": [
++      "this pomp",
++      "this pump",
++      "bump",
++      "fistb",
++      "fistf",
++      "this book",
++      "pisto",
++      "with pomp",
++      "fison",
++      "first",
++      "fifth",
++      "were fifteen",
++      "if bump",
++      "wisdom",
++      "this bu",
++      "fist bomb",
++      "fist ball",
++      "this ball",
++      "system",
++      "fistbump"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_blackjack",
++    "keyphrases": [
++      "black",
++      "cards",
++      "game",
++      "play blackjack"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_affirmative",
++    "keyphrases": [
++      "yes",
++      "correct",
++      "sure",
++      "yes please"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_negative",
++    "keyphrases": [
++      "no",
++      "dont",
++      "no thanks"
++    ],
++    "requiresexact": true
++  },
++  {
++    "name": "intent_photo_take_extend",
++    "keyphrases": [
++      "photo",
++      "foto",
++      "selby",
++      "capture",
++      "picture",
++      "take a photo of me"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_praise",
++    "keyphrases": [
++      "good",
++      "awesome",
++      "also",
++      "as some",
++      "of them",
++      "battle",
++      "t rob",
++      "the ro",
++      "amazing",
++      "woodcourt",
++      "good robot"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_abuse",
++    "keyphrases": [
++      "bad",
++      "that ro",
++      "ad ro",
++      "a root",
++      "hate",
++      "horrible",
++      "bad robot"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_apologize",
++    "keyphrases": [
++      "sorry",
++      "apologize",
++      "apologise",
++      "the tory",
++      "nevermind",
++      "never mind",
++      "im sorry"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_backup",
++    "keyphrases": [
++      "back up",
++      "backup",
++      "backwards",
++      "go backwards",
++      "reverse",
++      "move back",
++      "beck"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_volumedown",
++    "keyphrases": [
++      "all you down",
++      "volume down",
++      "down volume",
++      "down the volume",
++      "quieter",
++      "turn the volume down"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_volumeup",
++    "keyphrases": [
++      "all you up",
++      "volume up",
++      "up volume",
++      "up the volume",
++      "louder"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_lookatme",
++    "keyphrases": [
++      "stare",
++      "at me"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_volumelevel_extend",
++    "keyphrases": [
++      "all you",
++      "volume",
++      "loudness"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_shutup",
++    "keyphrases": [
++      "shut up"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_greeting_hello",
++    "keyphrases": [
++      "hello",
++      "our you",
++      "follow",
++      "for you",
++      "far you",
++      "how about you",
++      "how are you",
++      "the low",
++      "the loo",
++      "our are you"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_come",
++    "keyphrases": [
++      "come to me",
++      "come here"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_love",
++    "keyphrases": [
++      "love you",
++      "dove you",
++      "i love you"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_knowledge_promptquestion",
++    "keyphrases": [
++      "question",
++      "weston",
++      "i have a question",
++      "conversation",
++      "lets talk",
++      "let's talk"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_clock_checktimer",
++    "keyphrases": [
++      "check timer",
++      "check the timer",
++      "check the time her",
++      "check time her",
++      "check time her",
++      "check time of her",
++      "checked the timer",
++      "checked the time her",
++      "checked the time of her"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_global_stop_extend",
++    "keyphrases": [
++      "up the timer",
++      "stop timer",
++      "cancel the",
++      "cancel timer",
++      "stop clock",
++      "stop be",
++      "stopped t",
++      "stopped be",
++      "stopped at",
++      "stop the"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_clock_settimer_extend",
++    "keyphrases": [
++      "timer",
++      "time for",
++      "time of for",
++      "time or",
++      "time of",
++      "set a timer for"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_clock_time",
++    "keyphrases": [
++      "time is it",
++      "the time",
++      "what time",
++      "clock",
++      "what time is it"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_quiet",
++    "keyphrases": [
++      "quiet",
++      "stop",
++      "be quiet"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_dance",
++    "keyphrases": [
++      "dance",
++      "dancing",
++      "thence",
++      "dance to the beat",
++      "the beat",
++      "boogie",
++      "to the music"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_pickupcube",
++    "keyphrases": [
++      "pickup",
++      "pick up"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_fetchcube",
++    "keyphrases": [
++      "fetch your cu",
++      "fetch cu",
++      "fetch the cu",
++      "bring to me",
++      "bring me",
++      "bring me your cube"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_imperative_findcube",
++    "keyphrases": [
++      "your cu",
++      "the cu",
++      "find your cube"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_anytrick",
++    "keyphrases": [
++      "trick",
++      "something cool",
++      "some thing cool",
++      "do a trick"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_message_recordmessage_extend",
++    "keyphrases": [
++      "record"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_message_playmessage_extend",
++    "keyphrases": [
++      "play message",
++      "play method",
++      "play a message",
++      "play a method"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_blackjack_hit",
++    "keyphrases": [
++      "hit"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_blackjack_stand",
++    "keyphrases": [
++      "stand",
++      "stan"
++    ],
++    "requiresexact": false
++  },
++  {
++    "name": "intent_play_keepaway",
++    "keyphrases": [
++      "keepaway",
++      "keep away",
++      "play keepaway"
++    ],
++    "requiresexact": false
++  }
+ ]
+diff --git a/chipper/pkg/vars/config.go b/chipper/pkg/vars/config.go
+index 40b60e6..a919424 100644
+--- a/chipper/pkg/vars/config.go
++++ b/chipper/pkg/vars/config.go
+@@ -33,13 +33,30 @@ type apiConfig struct {
+ 		OpenAIVoiceWithEnglish bool    `json:"openai_voice_with_english"`
+ 		SaveChat               bool    `json:"save_chat"`
+ 		CommandsEnable         bool    `json:"commands_enable"`
++		LLMFirst               bool    `json:"llm_first"`
+ 		Endpoint               string  `json:"endpoint"`
+ 		TopP                   float32 `json:"top_p"`
+ 		Temperature            float32 `json:"temp"`
++		// ConversationMode and ConversationTimeoutSec added 2026-09-26d (Hermes),
++		// the owner-approved "conversation mode" for Vector: after an LLM reply
++		// finishes speaking and behavior control is released, wire-pod
++		// auto-triggers the wake word (same mechanism as
++		// /api-sdk/trigger_wake_word) so the owner doesn't have to say "Hey
++		// Vector" again for a follow-up. See pkg/wirepod/ttr/conversation.go
++		// for the state machine and termination rules.
++		ConversationMode       bool    `json:"conversation_mode"`
++		ConversationTimeoutSec int     `json:"conversation_timeout_sec"`
+ 	} `json:"knowledge"`
+ 	STT struct {
+ 		Service  string `json:"provider"`
+ 		Language string `json:"language"`
++		// EndOfSpeechSilenceMs and MinTotalAudioMs added 2026-09-27 (Hermes)
++		// for the "he is cutting me off" fix -- see
++		// pkg/wirepod/speechrequest/speechrequest.go's DetectEndOfSpeech.
++		// Both are milliseconds; 0/unset falls back to the defaults there
++		// (DefaultEndOfSpeechSilenceMs / DefaultMinTotalAudioMs).
++		EndOfSpeechSilenceMs int `json:"end_of_speech_silence_ms"`
++		MinTotalAudioMs      int `json:"min_total_audio_ms"`
+ 	} `json:"STT"`
+ 	Server struct {
+ 		// false for ip, true for escape pod
+@@ -129,6 +146,17 @@ func ReadConfig() {
+ 			APIConfig.Knowledge.Model = "meta-llama/Llama-3-70b-chat-hf"
+ 		}
+ 
++		// Added 2026-09-26d (Hermes): a config file written before conversation
++		// mode existed will unmarshal ConversationTimeoutSec as 0. Treat 0 as
++		// "not set" and fall back to the 12s default rather than a 0s timeout,
++		// which would end every conversation instantly. ConversationMode itself
++		// intentionally has NO such fallback -- its zero value (false) is the
++		// correct fail-safe default for configs that predate this feature and
++		// haven't gone through the deploy script.
++		if APIConfig.Knowledge.ConversationTimeoutSec <= 0 {
++			APIConfig.Knowledge.ConversationTimeoutSec = 12
++		}
++
+ 		writeBytes, _ := json.Marshal(APIConfig)
+ 		os.WriteFile(ApiConfigPath, writeBytes, 0644)
+ 		logger.Println("API config successfully read")
+diff --git a/chipper/pkg/wirepod/preqs/intent.go b/chipper/pkg/wirepod/preqs/intent.go
+index 6513dbc..191b348 100755
+--- a/chipper/pkg/wirepod/preqs/intent.go
++++ b/chipper/pkg/wirepod/preqs/intent.go
+@@ -19,10 +19,18 @@ func (s *Server) ProcessIntent(req *vtt.IntentRequest) (*vtt.IntentResponse, err
+ 		var err error
+ 		transcribedText, err = sttHandler(speechReq)
+ 		if err != nil {
++			// Conversation mode (2026-09-26d, Hermes): an STT error ends any
++			// active auto-listen conversation rather than leaving it dangling.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "voice processing error: "+err.Error(), map[string]string{"error": err.Error()}, true)
+ 			return nil, nil
+ 		}
+ 		if strings.TrimSpace(transcribedText) == "" {
++			// Conversation mode (2026-09-26d, Hermes): the design's "silence
++			// ends the conversation" rule -- an empty transcript from a
++			// follow-up auto-listen means the user didn't say anything, so
++			// stop re-triggering.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "", map[string]string{}, false)
+ 			return nil, nil
+ 		}
+diff --git a/chipper/pkg/wirepod/preqs/intent_graph.go b/chipper/pkg/wirepod/preqs/intent_graph.go
+index 4e8e565..c7ffc86 100755
+--- a/chipper/pkg/wirepod/preqs/intent_graph.go
++++ b/chipper/pkg/wirepod/preqs/intent_graph.go
+@@ -18,10 +18,18 @@ func (s *Server) ProcessIntentGraph(req *vtt.IntentGraphRequest) (*vtt.IntentGra
+ 		var err error
+ 		transcribedText, err = sttHandler(speechReq)
+ 		if err != nil {
++			// Conversation mode (2026-09-26d, Hermes): an STT error ends any
++			// active auto-listen conversation rather than leaving it dangling.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "voice processing error: "+err.Error(), map[string]string{"error": err.Error()}, true)
+ 			return nil, nil
+ 		}
+ 		if strings.TrimSpace(transcribedText) == "" {
++			// Conversation mode (2026-09-26d, Hermes): the design's "silence
++			// ends the conversation" rule -- an empty transcript from a
++			// follow-up auto-listen means the user didn't say anything, so
++			// stop re-triggering.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "", map[string]string{}, false)
+ 			return nil, nil
+ 		}
+diff --git a/chipper/pkg/wirepod/preqs/knowledgegraph.go b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+index 1d0a9fa..8867f28 100755
+--- a/chipper/pkg/wirepod/preqs/knowledgegraph.go
++++ b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+@@ -71,8 +71,25 @@ func streamingKG(req *vtt.KnowledgeGraphRequest, speechReq sr.SpeechRequest) str
+ 	// have him start "thinking" right after the text is transcribed
+ 	transcribedText, err := sttHandler(speechReq)
+ 	if err != nil {
++		// Conversation mode (2026-09-26e, Hermes): a knowledge_question
++		// AppIntent follow-up (conversation.go's auto-listen -- see
++		// TriggerFollowUpListen) always arrives here, never through
++		// ProcessTextAll/intent.go's own noaudio handling. An STT error mid
++		// conversation should end it rather than leave stale state around.
++		ttr.EndConversation(req.Device)
+ 		return "There was an error."
+ 	}
++	if strings.TrimSpace(transcribedText) == "" {
++		// Conversation mode (2026-09-26e, Hermes): the design's "silence
++		// ends the conversation" rule. Unlike intent.go/intent_graph.go,
++		// this KG-only pathway had NO empty-transcript guard at all --
++		// without this, a silent conversation-mode follow-up would feed an
++		// empty message straight to the LLM and just keep re-listening,
++		// bounded only by the cap/timeout instead of actually ending on
++		// silence as designed.
++		ttr.EndConversation(req.Device)
++		return ""
++	}
+ 	kg := pb.KnowledgeGraphResponse{
+ 		Session:     req.Session,
+ 		DeviceId:    req.Device,
+diff --git a/chipper/pkg/wirepod/sdkapp/server.go b/chipper/pkg/wirepod/sdkapp/server.go
+index efd6520..bf0ae24 100755
+--- a/chipper/pkg/wirepod/sdkapp/server.go
++++ b/chipper/pkg/wirepod/sdkapp/server.go
+@@ -521,25 +521,69 @@ func SdkapiHandler(w http.ResponseWriter, r *http.Request) {
+ 		fmt.Fprint(w, "done")
+ 		return
+ 	case r.URL.Path == "/api-sdk/trigger_wake_word":
+-		robotIP := strings.Split(robotObj.Target, ":")[0]
+-		consoleURL := fmt.Sprintf("http://%s:8889/consolevarset?key=FakeButtonPressType&value=singlePressDetected", robotIP)
+-		
+-		client := &http.Client{
+-			Timeout: 10 * time.Second,
+-		}
+-		
+-		resp, err := client.Get(consoleURL)
+-		if err != nil {
++		// Fixed 2026-09-26e (Hermes): this used to simulate a button press
++		// via an HTTP GET to the robot's debug console webserver on port
++		// 8889 (FakeButtonPressType). That port is CLOSED on production
++		// escape-pod firmware -- confirmed by TCP connect failures/curl
++		// timeouts against the owner's real robot, which is why conversation
++		// mode's auto-listen (and curious-Vector's calls to this same
++		// endpoint) never actually worked. AppIntent("knowledge_question")
++		// over the already-connected gRPC channel (443) is the mechanism
++		// production firmware actually accepts -- it's the exact call stock
++		// wire-pod uses for {{newVoiceRequest||now}} (see DoNewRequest in
++		// pkg/wirepod/ttr/kgsim_cmds.go). Same URL/contract for callers
++		// (GET, "success" body on 200, error body + 500 otherwise) -- only
++		// the underlying mechanism changed, so curious-Vector needs no
++		// changes on its side.
++		if _, err := robot.Conn.AppIntent(ctx, &vectorpb.AppIntentRequest{Intent: "knowledge_question"}); err != nil {
+ 			http.Error(w, "Failed to trigger wake word: "+err.Error(), http.StatusInternalServerError)
+ 			return
+ 		}
+-		defer resp.Body.Close()
+-		
+-		if resp.StatusCode != http.StatusOK {
+-			http.Error(w, "Consolevars returned error", resp.StatusCode)
++		fmt.Fprint(w, "success")
++		return
++	case r.URL.Path == "/api-sdk/list_anim_triggers":
++		// Added 2026-09-26e (Hermes) for the day-cycle scheduler, whose
++		// separate Python SDK connection gets UNAUTHENTICATED 401 against
++		// the robot directly -- it needs a pod-side endpoint instead. Lists
++		// the animation TRIGGER names (not raw clip names) Vector knows, so
++		// callers can pick a real sleepy/yawn/etc. trigger. See
++		// animation.go for the pure name-extraction helper this wraps.
++		listCtx, cancel := context.WithTimeout(context.Background(), animationRPCTimeout)
++		defer cancel()
++		resp, err := robot.Conn.ListAnimationTriggers(listCtx, &vectorpb.ListAnimationTriggersRequest{})
++		if err != nil {
++			http.Error(w, "Failed to list animation triggers: "+err.Error(), http.StatusInternalServerError)
++			return
++		}
++		names := animationTriggerNames(resp)
++		jsonBytes, err := json.Marshal(names)
++		if err != nil {
++			http.Error(w, "Failed to encode animation trigger list: "+err.Error(), http.StatusInternalServerError)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		w.Write(jsonBytes)
++		return
++	case r.URL.Path == "/api-sdk/play_animation":
++		// Added 2026-09-26e (Hermes) for the day-cycle scheduler (its own
++		// Python SDK connection gets UNAUTHENTICATED 401, see above) --
++		// plays an animation via wire-pod's own robot connection instead.
++		// ?trigger=<AnimTriggerName> plays a trigger (the robot resolves it
++		// to a contextual clip); ?anim=<clip> plays an exact named
++		// animation clip, same call shape as DoPlayAnimation/DoPlayAnimationWI
++		// in pkg/wirepod/ttr/kgsim_cmds.go use for the LLM's
++		// {{playAnimationWI||...}} path. Takes behavior control briefly,
++		// plays, releases -- bounded to animationRPCTimeout (10s).
++		trigger := r.FormValue("trigger")
++		clip := r.FormValue("anim")
++		if err := validatePlayAnimationParams(trigger, clip); err != nil {
++			http.Error(w, err.Error(), http.StatusBadRequest)
++			return
++		}
++		if err := playAnimationWithControl(robot, trigger, clip, animationRPCTimeout); err != nil {
++			http.Error(w, "Failed to play animation: "+err.Error(), http.StatusInternalServerError)
+ 			return
+ 		}
+-		
+ 		fmt.Fprint(w, "success")
+ 		return
+ 	}
+diff --git a/chipper/pkg/wirepod/speechrequest/speechrequest.go b/chipper/pkg/wirepod/speechrequest/speechrequest.go
+index c808b40..7a5bdd9 100755
+--- a/chipper/pkg/wirepod/speechrequest/speechrequest.go
++++ b/chipper/pkg/wirepod/speechrequest/speechrequest.go
+@@ -12,6 +12,7 @@ import (
+ 	pb "github.com/digital-dream-labs/api/go/chipperpb"
+ 	"github.com/digital-dream-labs/opus-go/opus"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/vtt"
+ 	"github.com/maxhawkins/go-webrtcvad"
+ )
+@@ -36,10 +37,16 @@ type SpeechRequest struct {
+ 	PrevLenRaw      int
+ 	InactiveFrames  int
+ 	ActiveFrames    int
+-	VADInst         *webrtcvad.VAD
+-	LastAudioChunk  []byte
+-	IsOpus          bool
+-	OpusStream      *opus.OggStream
++	// TotalFrames added 2026-09-27 (Hermes) for the "he is cutting me off"
++	// fix -- counts every 10ms VAD frame processed since the request
++	// started (active or not), used to enforce a minimum total-audio
++	// duration before end-of-speech is allowed to trigger at all. See
++	// DetectEndOfSpeech.
++	TotalFrames    int
++	VADInst        *webrtcvad.VAD
++	LastAudioChunk []byte
++	IsOpus         bool
++	OpusStream     *opus.OggStream
+ }
+ 
+ func BytesToSamples(buf []byte) []int16 {
+@@ -105,10 +112,74 @@ func BytesToIntVAD(stream opus.OggStream, data []byte, die bool, isOpus bool) []
+ 	}
+ }
+ 
++// vadFrameMs is the duration of one webrtcvad frame as fed by SplitVAD
++// (320 bytes = 160 16-bit samples at 16kHz = 10ms).
++const vadFrameMs = 10
++
++// Defaults for the 2026-09-27 (Hermes) "he is cutting me off" fix: the owner
++// paused briefly after "ask hermes" and the OLD 230ms trailing-silence
++// threshold (23 frames) cut the stream before he finished speaking.
++// DefaultEndOfSpeechSilenceMs raises that to ~1.1s, and
++// DefaultMinTotalAudioMs adds a floor so end-of-speech can never trigger
++// before ~1.5s of total audio (active + inactive) has been seen at all,
++// regardless of how the silence/activity is distributed.
++const (
++	// DefaultEndOfSpeechSilenceMs reverted 2026-09-28 (Hermes) back to
++	// 1100ms. History: round 4 (live-6) shipped 1100ms and ran reliably in
++	// production (aside from occasional EOF races, which is a SEPARATE,
++	// now-fixed problem -- see streamend.go/Vosk.go's STT). Round 5
++	// (live-7) lowered this to 800ms as a speculative extra safety margin
++	// -- that value was NEVER validated in production before live-7 broke
++	// ALL speech recognition (every request: EOF/DeadlineExceeded/Canceled,
++	// zero successful transcriptions). A real end-to-end harness
++	// (pkg/wirepod/stt/vosk/Vosk_e2e_test.go) built to hunt this down does
++	// NOT reproduce the failure against either value -- the actual root
++	// cause was not conclusively identified in the source. Given that,
++	// 1100ms is the conservative choice: it's the one value with actual
++	// production track record. The EOF-finalize fix (the real structural
++	// improvement) works independently of this exact number either way.
++	DefaultEndOfSpeechSilenceMs = 1100
++	DefaultMinTotalAudioMs      = 1500
++)
++
++// minActiveFramesForEnd is unchanged from the original (18 frames = 180ms
++// of actual speech) -- kept as a floor so a stray noise burst followed by
++// silence can't trigger end-of-speech on its own; the NEW MinTotalAudioMs
++// gate is a separate, additional floor on total elapsed time.
++const minActiveFramesForEnd = 18
++
++// endOfSpeechSilenceFrames resolves the configured trailing-silence
++// threshold (falls back to DefaultEndOfSpeechSilenceMs if unset/invalid).
++func endOfSpeechSilenceFrames() int {
++	ms := vars.APIConfig.STT.EndOfSpeechSilenceMs
++	if ms <= 0 {
++		ms = DefaultEndOfSpeechSilenceMs
++	}
++	return ms / vadFrameMs
++}
++
++// minTotalAudioFrames resolves the configured minimum-total-audio floor
++// (falls back to DefaultMinTotalAudioMs if unset/invalid).
++func minTotalAudioFrames() int {
++	ms := vars.APIConfig.STT.MinTotalAudioMs
++	if ms <= 0 {
++		ms = DefaultMinTotalAudioMs
++	}
++	return ms / vadFrameMs
++}
++
++// endOfSpeechReached is the pure gating decision behind DetectEndOfSpeech,
++// split out 2026-09-27 (Hermes) so it's unit-testable without a real VAD/
++// audio pipeline. All units are VAD frames (10ms each).
++func endOfSpeechReached(inactiveFrames, activeFrames, totalFrames, silenceFrames, minTotalFrames int) bool {
++	return inactiveFrames >= silenceFrames && activeFrames > minActiveFramesForEnd && totalFrames >= minTotalFrames
++}
++
+ // Uses VAD to detect when the user stops speaking
+ func (req *SpeechRequest) DetectEndOfSpeech() (bool, bool) {
+-	// changes InactiveFrames and ActiveFrames in req
+-	inactiveNumMax := 23
++	// changes InactiveFrames, ActiveFrames and TotalFrames in req
++	silenceFrames := endOfSpeechSilenceFrames()
++	minTotalFrames := minTotalAudioFrames()
+ 	for _, chunk := range SplitVAD(req.LastAudioChunk) {
+ 		active, err := req.VADInst.Process(16000, chunk)
+ 		if err != nil {
+@@ -116,13 +187,14 @@ func (req *SpeechRequest) DetectEndOfSpeech() (bool, bool) {
+ 			logger.Println(err)
+ 			return true, false
+ 		}
++		req.TotalFrames = req.TotalFrames + 1
+ 		if active {
+ 			req.ActiveFrames = req.ActiveFrames + 1
+ 			req.InactiveFrames = 0
+ 		} else {
+ 			req.InactiveFrames = req.InactiveFrames + 1
+ 		}
+-		if req.InactiveFrames >= inactiveNumMax && req.ActiveFrames > 18 {
++		if endOfSpeechReached(req.InactiveFrames, req.ActiveFrames, req.TotalFrames, silenceFrames, minTotalFrames) {
+ 			logger.Println("(Bot " + req.Device + ") End of speech detected.")
+ 			return true, true
+ 		}
+diff --git a/chipper/pkg/wirepod/stt/vosk/Vosk.go b/chipper/pkg/wirepod/stt/vosk/Vosk.go
+index 286c320..ca5c1ba 100755
+--- a/chipper/pkg/wirepod/stt/vosk/Vosk.go
++++ b/chipper/pkg/wirepod/stt/vosk/Vosk.go
+@@ -196,15 +196,36 @@ func STT(req sr.SpeechRequest) (string, error) {
+ 	rec, recind := getRec(withGrm)
+ 	rec.SetWords(1)
+ 	rec.AcceptWaveform(req.FirstReq)
++	framesAccepted := 0
++	if len(req.FirstReq) > 0 {
++		framesAccepted++
++	}
+ 	req.DetectEndOfSpeech()
+ 	for {
+ 		chunk, err := req.GetNextStreamChunk()
+ 		if err != nil {
++			// Fixed 2026-09-27 (Hermes): the robot can close its end of the
++			// stream (its own end-of-utterance detection or a stream
++			// deadline) BEFORE our (now more lenient, ~1.1s) VAD decides
++			// end-of-speech -- this used to be treated as a hard error,
++			// discarding whatever audio had already been accepted (2 of 5
++			// recent requests logged this exact EOF -> intent_system_noaudio
++			// drop). See ShouldFinalizeOnStreamEnd in
++			// pkg/wirepod/speechrequest/streamend.go: finalize with what we
++			// have instead of erroring, as long as some audio was accepted.
++			// A truly empty result still falls through to noaudio downstream
++			// (preqs/intent.go's existing empty-transcript check) -- this
++			// only stops throwing away real speech.
++			if sr.ShouldFinalizeOnStreamEnd(err, framesAccepted) {
++				logger.Println("(Bot " + req.Device + ", Vosk) Stream ended before end-of-speech decided -- finalizing with audio already accepted instead of dropping it")
++				break
++			}
+ 			return "", err
+ 		}
+ 		speechIsDone, doProcess := req.DetectEndOfSpeech()
+ 		if doProcess {
+ 			rec.AcceptWaveform(chunk)
++			framesAccepted++
+ 		}
+ 		if speechIsDone {
+ 			break
+@@ -217,7 +238,7 @@ func STT(req sr.SpeechRequest) (string, error) {
+ 	} else {
+ 		gpRecs[recind].InUse = false
+ 	}
+-	transcribedText := jres["text"].(string)
++	transcribedText, _ := jres["text"].(string)
+ 	logger.Println("Bot " + req.Device + " Transcribed text: " + transcribedText)
+ 	return transcribedText, nil
+ }
+diff --git a/chipper/pkg/wirepod/ttr/bcontrol.go b/chipper/pkg/wirepod/ttr/bcontrol.go
+index a5ef94a..07e4e2e 100644
+--- a/chipper/pkg/wirepod/ttr/bcontrol.go
++++ b/chipper/pkg/wirepod/ttr/bcontrol.go
+@@ -3,12 +3,85 @@ package wirepod_ttr
+ import (
+ 	"context"
+ 	"log"
++	"sync"
++	"time"
+ 
+ 	"github.com/fforchino/vector-go-sdk/pkg/vector"
+ 	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
+ )
+ 
++// Behavior-control safety net, 2026-09-27 (Hermes). History:
++//   - First cut: a flat 30s deadline, after the owner's robot froze
++//     (buttons/movement stopped) when its Wi-Fi dropped mid-reply while
++//     wire-pod held OVERRIDE_BEHAVIORS and the normal release (the `stop`
++//     channel, sent once the response pipeline finishes) never arrived.
++//   - Found immediately after: the flat 30s ALSO fired during a legitimate
++//     reply -- a getImage turn (intro line -> capture -> ~6s vision model
++//     -> spoken answer) routinely exceeds 30s. Replaced with an adaptive
++//     watchdog: the deadline resets on every sign of real progress
++//     (TouchBehaviorControlActivity, called from PerformActions -- covers
++//     speech, animations, doIntent, everything it dispatches), with a
++//     30s+ absolute cap as the true "definitely stuck" ceiling. The
++//     original flat-30s freeze fix's actual safety property (control can
++//     never be held forever) is preserved by the absolute cap; the
++//     regression it caused is fixed by resetting on progress.
++const (
++	behaviorControlInactivityTimeout = 20 * time.Second // no progress for this long -> force-release
++	behaviorControlAbsoluteCap       = 90 * time.Second  // hard ceiling regardless of activity
++	behaviorControlWatchdogInterval  = 1 * time.Second   // how often the watchdog re-checks
++)
++
++// releaseBehaviorControlRetries/releaseBehaviorControlRetryDelay: how many
++// times (and how far apart) to retry sending ControlRelease if the first
++// attempt fails -- covers the same "robot briefly unreachable" case that
++// motivated this whole safety net, so a transient failure right at
++// release time doesn't leave control stuck forever either.
++const releaseBehaviorControlRetries = 3
++const releaseBehaviorControlRetryDelay = 2 * time.Second
++
++// behaviorControlActivity tracks, per ESN, the last time
++// TouchBehaviorControlActivity was called -- the inactivity watchdog reads
++// this to decide whether to force-release. Package-level (like
++// conversation.go's/pendingintent.go's per-ESN maps) since BControl only
++// has the robot connection, not a natural place to thread a channel through
++// every caller that might make progress.
++var (
++	behaviorControlActivity   = map[string]time.Time{}
++	behaviorControlActivityMu sync.Mutex
++)
++
++// TouchBehaviorControlActivity records that esn's held behavior control is
++// making real progress right now (a sentence was spoken, an animation
++// played, an action fired, ...), resetting the inactivity watchdog. Safe
++// to call even when no BControl watchdog is currently running for esn.
++func TouchBehaviorControlActivity(esn string) {
++	behaviorControlActivityMu.Lock()
++	defer behaviorControlActivityMu.Unlock()
++	behaviorControlActivity[esn] = time.Now()
++}
++
++func getBehaviorControlActivity(esn string) time.Time {
++	behaviorControlActivityMu.Lock()
++	defer behaviorControlActivityMu.Unlock()
++	return behaviorControlActivity[esn]
++}
++
++// behaviorControlShouldRelease is the pure watchdog decision, split out so
++// it's unit-testable without a real robot connection or timers: given how
++// long control has been held in total and how long since the last
++// progress touch, should the watchdog force a release? Returns the reason
++// string for logging when true.
++func behaviorControlShouldRelease(heldFor, sinceLastActivity, inactivityTimeout, absoluteCap time.Duration) (bool, string) {
++	if heldFor >= absoluteCap {
++		return true, "absolute cap"
++	}
++	if sinceLastActivity >= inactivityTimeout {
++		return true, "inactivity watchdog"
++	}
++	return false, ""
++}
++
+ func sayText(robot *vector.Vector, text string) {
+ 	controlRequest := &vectorpb.BehaviorControlRequest{
+ 		RequestType: &vectorpb.BehaviorControlRequest_ControlRequest{
+@@ -117,23 +190,65 @@ func BControl(robot *vector.Vector, ctx context.Context, start, stop chan bool)
+ 			}
+ 		}
+ 
+-		for {
+-			select {
+-			case <-stop:
+-				logger.Println("KGSim: releasing behavior control (interrupt)")
+-				if err := r.Send(
++		// releaseControl retries a few times (2026-09-27, Hermes) since a
++		// send failing right at release time is the same class of
++		// transient robot-unreachable condition this whole safety net is
++		// for -- don't give up on the first failure.
++		releaseControl := func(reason string) {
++			logger.Println("KGSim: releasing behavior control (" + reason + ")")
++			for attempt := 1; attempt <= releaseBehaviorControlRetries; attempt++ {
++				sendErr := r.Send(
+ 					&vectorpb.BehaviorControlRequest{
+ 						RequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
+ 							ControlRelease: &vectorpb.ControlRelease{},
+ 						},
+ 					},
+-				); err != nil {
+-					logger.Println(err)
++				)
++				if sendErr == nil {
+ 					return
+ 				}
++				logger.Println("BControl: release attempt failed (" + sendErr.Error() + ")")
++				if attempt < releaseBehaviorControlRetries {
++					time.Sleep(releaseBehaviorControlRetryDelay)
++				}
++			}
++			logger.Println("BControl: giving up on releasing behavior control after retries")
++		}
++
++		// Fixed 2026-09-27 (Hermes): this used to be a busy-spin
++		// `for { select { case <-stop: ...; default: continue } }` with NO
++		// deadline -- if `stop` never arrived (e.g. the response pipeline
++		// got stuck upstream because the robot's Wi-Fi dropped mid-reply),
++		// control was held FOREVER and the robot's own buttons/movement
++		// stayed frozen (OVERRIDE_BEHAVIORS blocks the robot's normal
++		// behavior stack). Now a proper blocking select with an adaptive
++		// watchdog: force-release only after behaviorControlInactivityTimeout
++		// with no progress, or behaviorControlAbsoluteCap regardless --
++		// resets on every TouchBehaviorControlActivity call (see
++		// PerformActions in kgsim_cmds.go), so a long-but-progressing reply
++		// (e.g. a getImage turn: intro -> capture -> ~6s vision model ->
++		// answer) isn't cut off the way a flat 30s deadline was.
++		esn := robot.Cfg.SerialNo
++		TouchBehaviorControlActivity(esn)
++		heldSince := time.Now()
++		ticker := time.NewTicker(behaviorControlWatchdogInterval)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-stop:
++				releaseControl("interrupt")
+ 				return
+-			default:
+-				continue
++			case <-ticker.C:
++				shouldRelease, reason := behaviorControlShouldRelease(
++					time.Since(heldSince),
++					time.Since(getBehaviorControlActivity(esn)),
++					behaviorControlInactivityTimeout,
++					behaviorControlAbsoluteCap,
++				)
++				if shouldRelease {
++					releaseControl(reason)
++					return
++				}
+ 			}
+ 		}
+ 		// * end - modified from official vector-go-sdk
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 585afa2..32a5762 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -190,6 +190,10 @@ func CreateAIReq(transcribedText, esn string, gpt3tryagain, isKG bool) openai.Ch
+ }
+ 
+ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bool) (string, error) {
++	// Captured at entry (not at speech-end) so the conversation-mode timeout
++	// check (see conversation.go) measures wall-clock time since the user
++	// actually spoke, including however long the LLM+TTS round trip takes.
++	lastUserSpeechAt := time.Now()
+ 	start := make(chan bool)
+ 	stop := make(chan bool)
+ 	stopStop := make(chan bool)
+@@ -299,35 +303,25 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 		for {
+ 			response, err := stream.Recv()
+ 			if errors.Is(err, io.EOF) {
+-				// prevents a crash
+-				if len(fullRespSlice) == 0 {
+-					logger.Println("LLM returned no response")
+-					successIntent <- false
+-					if isKG {
+-						kgStopLooping = true
+-						for range kgReadyToAnswer {
+-							break
+-						}
+-						stop <- true
+-						time.Sleep(time.Second / 3)
+-						KGSim(esn, "There was an error getting data from the L. L. M.")
+-					}
+-					break
++				// Fixed 2026-09-27 (Hermes): always flush any trailing text
++				// that never hit a punctuation-mark split, instead of the
++				// old fragile newStr/TrimPrefix reconciliation, which
++				// treated a reply with NO punctuation at all as "no
++				// response" and silently dropped it entirely (the robot
++				// showed the cloud-with-exclamation error with nothing
++				// spoken). See flushTrailingText/needsFallbackResponse in
++				// llmflush.go for the pure logic this wraps. Raw text is
++				// logged (truncated) unconditionally now, for diagnosing
++				// whatever the NEXT one of these turns out to be.
++				logger.Println("LLM raw response (truncated): " + truncateForLog(fullfullRespText, llmRawLogTruncateLen))
++				fullRespSlice = flushTrailingText(fullRespSlice, fullRespText)
++				fullRespText = ""
++				if needsFallbackResponse(fullRespSlice) {
++					logger.Println("LLM produced no speakable text and no action -- using fallback reply")
++					fullRespSlice = append(fullRespSlice, llmEmptyReplyFallback)
+ 				}
+ 				isDone = true
+-				// if fullRespSlice != fullRespText, add that missing bit to fullRespSlice
+-				newStr := fullRespSlice[0]
+-				for i, str := range fullRespSlice {
+-					if i == 0 {
+-						continue
+-					}
+-					newStr = newStr + " " + str
+-				}
+-				if strings.TrimSpace(newStr) != strings.TrimSpace(fullfullRespText) {
+-					logger.Println("LLM debug: there is content after the last punctuation mark")
+-					extraBit := strings.TrimPrefix(fullRespText, newStr)
+-					fullRespSlice = append(fullRespSlice, extraBit)
+-				}
++				joinedResp := strings.Join(fullRespSlice, " ")
+ 				if vars.APIConfig.Knowledge.SaveChat {
+ 					Remember(openai.ChatCompletionMessage{
+ 						Role:    openai.ChatMessageRoleUser,
+@@ -335,12 +329,27 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 					},
+ 						openai.ChatCompletionMessage{
+ 							Role:    openai.ChatMessageRoleAssistant,
+-							Content: newStr,
++							Content: joinedResp,
+ 						},
+ 						esn)
+ 				}
+-				logger.LogUI("LLM response for " + esn + ": " + newStr)
++				logger.LogUI("LLM response for " + esn + ": " + joinedResp)
+ 				logger.Println("LLM stream finished")
++				// Always signal success now -- fullRespSlice is guaranteed
++				// non-empty above (real content or the fallback), so the
++				// old "no response" failure path (successIntent <- false)
++				// is no longer reachable via this branch. Non-blocking:
++				// harmless no-op if a value was already sent mid-stream.
++				select {
++				case successIntent <- true:
++				default:
++				}
++				// Wake up an outer response loop that's already parked
++				// waiting for more content (see the "for range speakReady"
++				// wait below) -- closing (rather than a non-blocking send)
++				// guarantees it can't be missed by a timing race, since
++				// nothing sends to speakReady after this point.
++				close(speakReady)
+ 				return
+ 			}
+ 
+@@ -501,6 +510,22 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 		if !interrupted {
+ 			stopStop <- true
+ 			stop <- true
++			// Deferred doIntent (added 2026-09-27): behavior control has
++			// just been released above -- fire any {{doIntent||...}} this
++			// turn queued (see PerformActions' ActionDoIntent case in
++			// kgsim_cmds.go and pendingintent.go). Run async, same
++			// fail-safe reasoning as MaybeContinueConversation below: never
++			// block/hold this control loop, never hang on a flaky robot.
++			go FirePendingIntentAfterRelease(esn, robot)
++			// Conversation mode (added 2026-09-26d, Hermes; trigger mechanism
++			// fixed 2026-09-26e): speech is done and behavior control has
++			// just been released above -- decide whether to auto-trigger a
++			// follow-up listen. Run async so it never blocks/holds this
++			// (already fragile) control loop, and so an unreachable robot
++			// (flaky Wi-Fi) can't hang anything here. MaybeContinueConversation
++			// looks the robot back up by ESN itself (see connectRobotByESN
++			// in conversation.go), so only the ESN needs to be passed here.
++			go MaybeContinueConversation(esn, fullfullRespText, lastUserSpeechAt)
+ 		}
+ 	}
+ 	return "", nil
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_cmds.go b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+index 86241a7..fe9da6b 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim_cmds.go
++++ b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+@@ -30,6 +30,8 @@ const (
+ 	ActionNewRequest = 4
+ 	// arg: sound file
+ 	ActionPlaySound = 4
++	// arg: whitelisted built-in intent name, e.g. intent_explore_start
++	ActionDoIntent = 5
+ )
+ 
+ var animationMap [][2]string = [][2]string{
+@@ -132,6 +134,13 @@ var ValidLLMCommands []LLMCommand = []LLMCommand{
+ 		Action:          ActionNewRequest,
+ 		SupportedModels: []string{"all"},
+ 	},
++	{
++		Command:         "doIntent",
++		Description:     "Triggers one specific built-in Vector robot action/behavior by its exact name. Use this when the user actually wants Vector to DO one of these real things (explore the room, go to its charger, tell the time, change volume, change eye color, take a photo, dance, do a trick, or move a specific way) - do not just talk about doing it, trigger it. You may say a short spoken line together with this command. NEVER invent a name that is not in the parameter choices - if nothing matches, do not use this command at all. Do NOT use this for greetings (hello/goodbye/good morning/good night) - always answer those with your own spoken words instead of this command.",
++		ParamChoices:    strings.Join(AllowedLLMIntents, ", "),
++		Action:          ActionDoIntent,
++		SupportedModels: []string{"all"},
++	},
+ 	// {
+ 	// 	Command:      "playSound",
+ 	// 	Description:  "Plays a sound on the robot.",
+@@ -140,6 +149,86 @@ var ValidLLMCommands []LLMCommand = []LLMCommand{
+ 	// },
+ }
+ 
++// AllowedLLMIntents is the explicit whitelist of built-in Vector intents the LLM
++// is permitted to trigger via {{doIntent||intent_name}}. Added 2026-09-26 by Hermes
++// (the owner-approved LLM-first speech routing, see project_vector_companion_state.md).
++// intent_greeting_* is deliberately NOT on this list: greetings must go through the
++// LLM's own spoken response, never the stock canned greeting animation.
++var AllowedLLMIntents = []string{
++	"intent_explore_start",
++	"intent_system_charger",
++	"intent_system_sleep",
++	"intent_clock_time",
++	"intent_imperative_volumeup",
++	"intent_imperative_volumedown",
++	"intent_imperative_eyecolor",
++	"intent_photo_take_extend",
++	"intent_imperative_dance",
++	"intent_play_fistbump",
++	"intent_play_popawheelie",
++	"intent_imperative_forward",
++	"intent_imperative_backup",
++	"intent_imperative_turnleft",
++	"intent_imperative_turnright",
++	"intent_imperative_turnaround",
++	"intent_imperative_come",
++	"intent_imperative_lookatme",
++}
++
++// IsAllowedLLMIntent reports whether intentName is on the AllowedLLMIntents
++// whitelist (trimmed comparison). Split out from DoIntent 2026-09-27 so the
++// whitelist check itself is unit-testable without a robot connection.
++func IsAllowedLLMIntent(intentName string) bool {
++	intentName = strings.TrimSpace(intentName)
++	for _, allowed := range AllowedLLMIntents {
++		if intentName == allowed {
++			return true
++		}
++	}
++	return false
++}
++
++// DoIntent dispatches a built-in Vector intent chosen by the LLM, but only if it
++// is on AllowedLLMIntents - this is the runtime enforcement of the whitelist, on
++// top of the prompt only ever listing these same names as valid ParamChoices.
++//
++// NOT called from the main LLM response path anymore as of 2026-09-27 (see
++// PerformActions' ActionDoIntent case and pendingintent.go) -- firing
++// AppIntent here, in a goroutine, WHILE wire-pod still holds
++// OVERRIDE_BEHAVIORS to keep speaking the rest of the reply, caused the
++// robot's actual behavior to be dropped/overridden: "explore mode" got a
++// spoken confirmation but the robot never moved. Kept as a thin
++// fire-and-forget wrapper in case any other caller needs the old
++// immediate-fire behavior; the deferred path uses DoIntentNow instead,
++// which returns the RPC error rather than discarding it.
++func DoIntent(intentName string, robot *vector.Vector) error {
++	intentName = strings.TrimSpace(intentName)
++	if !IsAllowedLLMIntent(intentName) {
++		logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + intentName)
++		return nil
++	}
++	go func() {
++		time.Sleep(time.Second / 3)
++		robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: intentName})
++	}()
++	return nil
++}
++
++// DoIntentNow fires the AppIntent call synchronously and returns any RPC
++// error, so a caller (pendingintent.go's FirePendingIntentAfterRelease) can
++// fail safe / log it instead of silently dropping it. No internal delay --
++// callers that defer until after behavior control is released already add
++// their own margin (pendingIntentPostReleaseDelay).
++func DoIntentNow(intentName string, robot *vector.Vector) error {
++	intentName = strings.TrimSpace(intentName)
++	if !IsAllowedLLMIntent(intentName) {
++		logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + intentName)
++		return nil
++	}
++	_, err := robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: intentName})
++	return err
++}
++
+ func ModelIsSupported(cmd LLMCommand, model string) bool {
+ 	for _, str := range cmd.SupportedModels {
+ 		if str == "all" || str == model {
+@@ -200,7 +289,17 @@ func GetActionsFromString(input string) []RobotAction {
+ 
+ 		cmdPlusParam := strings.Split(strings.TrimSpace(strings.Split(spl, "}}")[0]), "||")
+ 		cmd := strings.TrimSpace(cmdPlusParam[0])
+-		param := strings.TrimSpace(cmdPlusParam[1])
++		// Crash fix 2026-09-29 (live-10, Hermes): a single-segment tag with no
++		// "||" (e.g. the LLM emitting {{intent_play_popawheelie}} instead of
++		// {{doIntent||intent_play_popawheelie}}) used to panic here with
++		// "index out of range [1] with length 1". Treat a missing param as
++		// empty instead -- CmdParamToAction safely no-ops (logs + Action:-1)
++		// for any cmd name it doesn't recognize, so this never panics and never
++		// silently performs the wrong action.
++		var param string
++		if len(cmdPlusParam) > 1 {
++			param = strings.TrimSpace(cmdPlusParam[1])
++		}
+ 		action := CmdParamToAction(cmd, param)
+ 		if action.Action != -1 {
+ 			actions = append(actions, action)
+@@ -613,9 +712,17 @@ func DoGetImage(msgs []openai.ChatCompletionMessage, param string, robot *vector
+ 	}
+ }
+ 
+-func DoNewRequest(robot *vector.Vector) {
++// DoNewRequest re-opens the robot's mic for a follow-up voice command via
++// AppIntent("knowledge_question") -- the same call the stock companion app
++// uses for its "ask a question" button. Used both by the LLM-driven
++// {{newVoiceRequest||now}} command below (fire-and-forget, error ignored,
++// as before) AND by conversation.go's deterministic auto-listen (added
++// 2026-09-26e, Hermes), which DOES check the returned error so it can fail
++// safe on a bad connection instead of silently doing nothing.
++func DoNewRequest(robot *vector.Vector) error {
+ 	time.Sleep(time.Second / 3)
+-	robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "knowledge_question"})
++	_, err := robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "knowledge_question"})
++	return err
+ }
+ 
+ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction, robot *vector.Vector, stopStop chan bool) bool {
+@@ -630,6 +737,13 @@ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction,
+ 		if stopPerforming {
+ 			return false
+ 		}
++		// Adaptive behavior-control watchdog (2026-09-27, Hermes): every
++		// action this loop is about to perform counts as real progress --
++		// reset BControl's inactivity clock so a long-but-progressing reply
++		// (e.g. a getImage turn: intro -> capture -> ~6s vision model ->
++		// answer) doesn't get cut off by the watchdog the way a flat 30s
++		// deadline did.
++		TouchBehaviorControlActivity(robot.Cfg.SerialNo)
+ 		switch {
+ 		case action.Action == ActionSayText:
+ 			DoSayText(action.Parameter, robot)
+@@ -640,6 +754,23 @@ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction,
+ 		case action.Action == ActionNewRequest:
+ 			go DoNewRequest(robot)
+ 			return true
++		case action.Action == ActionDoIntent:
++			// Fixed 2026-09-27: used to call DoIntent here, which fired
++			// AppIntent in a goroutine after a short delay WHILE this same
++			// response was still being spoken under OVERRIDE_BEHAVIORS --
++			// the robot's real behavior (e.g. explore) got dropped/
++			// overridden by the ongoing speech control. Now: queue the
++			// intent (per-ESN) and stop speaking immediately (return true,
++			// same as ActionNewRequest/ActionGetImage below) -- the intent
++			// fires from kgsim.go, once behavior control has actually been
++			// released for this turn (see FirePendingIntentAfterRelease in
++			// pendingintent.go). If the name isn't whitelisted, log and
++			// keep going as before (nothing to defer).
++			if IsAllowedLLMIntent(action.Parameter) {
++				RecordPendingIntent(robot.Cfg.SerialNo, action.Parameter)
++				return true
++			}
++			logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + action.Parameter)
+ 		case action.Action == ActionGetImage:
+ 			DoGetImage(msgs, action.Parameter, robot, stopStop)
+ 			return true
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index b13c5bf..5571e48 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -5,7 +5,9 @@ import (
+ 	"encoding/json"
+ 	"fmt"
+ 	"os/exec"
++	"regexp"
+ 	"strings"
++	"time"
+ 
+ 	pb "github.com/digital-dream-labs/api/go/chipperpb"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
+@@ -108,68 +110,32 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 				// System intents can also match any utterances (*)
+ 				if (c.IsSystemIntent && strings.HasPrefix(seekText, "*")) || strings.Contains(voiceText, seekText) {
+ 					logger.Println("Bot " + botSerial + " Custom Intent Matched: " + c.Name + " - " + c.Description + " - " + c.Intent)
+-					var intentParams map[string]string
+-					var isParam bool = false
+-					if c.Params.ParamValue != "" {
+-						logger.Println("Bot " + botSerial + " Custom Intent Parameter: " + c.Params.ParamName + " - " + c.Params.ParamValue)
+-						intentParams = map[string]string{c.Params.ParamName: c.Params.ParamValue}
+-						isParam = true
+-					}
+ 
+-					go func() {
+-						if c.LuaScript != "" {
+-							err := scripting.RunLuaScript(botSerial, c.LuaScript)
+-							if err != nil {
+-								logger.Println("Error running Lua script: " + err.Error())
+-							}
+-						}
+-					}()
+-
+-					var args []string
+-					for _, arg := range c.ExecArgs {
+-						switch arg {
+-						case "!botSerial":
+-							arg = botSerial
+-						case "!speechText":
+-							arg = "\"" + voiceText + "\""
+-						case "!intentName":
+-							arg = c.Name
+-						case "!locale":
+-							arg = vars.APIConfig.STT.Language
+-						}
+-						args = append(args, arg)
+-					}
+-					var customIntentExec *exec.Cmd
+-					if len(args) == 0 {
+-						logger.Println("Bot " + botSerial + " Executing: " + c.Exec)
+-						customIntentExec = exec.Command(c.Exec)
+-					} else {
+-						logger.Println("Bot " + botSerial + " Executing: " + c.Exec + " " + strings.Join(args, " "))
+-						customIntentExec = exec.Command(c.Exec, args...)
+-					}
+-					var out bytes.Buffer
+-					var stderr bytes.Buffer
+-					customIntentExec.Stdout = &out
+-					customIntentExec.Stderr = &stderr
+-					err := customIntentExec.Run()
+-					if err != nil {
+-						fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
+-					}
+-					logger.Println("Bot " + botSerial + " Custom Intent Exec Output: " + strings.TrimSpace(string(out.String())))
+-
+-					if c.IsSystemIntent {
+-						// A system intent returns its output in json format
+-						var resp systemIntentResponseStruct
+-						err := json.Unmarshal(out.Bytes(), &resp)
+-						if err == nil && resp.Status == "ok" {
+-							logger.Println("Bot " + botSerial + " System intent parsed and executed successfully")
+-							IntentPass(req, resp.ReturnIntent, voiceText, intentParams, isParam)
++					// Ask-Hermes-with-empty-question fix (2026-09-27,
++					// Hermes; the owner: "he is cutting me off"): if nothing
++					// real was said after the trigger phrase, reprompt and
++					// listen for the actual question as a follow-up
++					// instead of running ask_hermes.py with just the bare
++					// trigger phrase as the "question". See pendinghermes.go.
++					if c.Name == "intent_ask_hermes" {
++						question := extractHermesQuestion(voiceText)
++						if len(strings.TrimSpace(question)) < minHermesQuestionLen {
++							logger.Println("Bot " + botSerial + " ask_hermes matched with an empty/short question -- reprompting instead of asking Hermes")
++							RecordPendingHermesQuestion(botSerial)
++							go func() {
++								KGSim(botSerial, hermesRepromptText)
++								time.Sleep(hermesRepromptFollowUpDelay)
++								if err := TriggerFollowUpListen(botSerial); err != nil {
++									logger.Println("Ask-Hermes reprompt: failed to trigger follow-up listen for " + botSerial + ": " + err.Error())
++								}
++							}()
+ 							successMatched = true
++							break
+ 						}
+-					} else {
+-						IntentPass(req, c.Intent, voiceText, intentParams, isParam)
+-						successMatched = true
+ 					}
++
++					runCustomIntentExec(req, c, voiceText, botSerial)
++					successMatched = true
+ 					break
+ 				}
+ 				if successMatched {
+@@ -184,6 +150,100 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 	return successMatched
+ }
+ 
++// runCustomIntentExec runs one matched custom intent's Lua script (if any)
++// and Exec/ExecArgs, then sends the appropriate IntentPass response. Split
++// out of customIntentHandler 2026-09-27 (Hermes) so it can also be invoked
++// directly for a pending Hermes follow-up question (see
++// runAskHermesWithQuestion below), bypassing the utterance-matching loop.
++func runCustomIntentExec(req interface{}, c vars.CustomIntent, voiceText string, botSerial string) {
++	var intentParams map[string]string
++	var isParam bool = false
++	if c.Params.ParamValue != "" {
++		logger.Println("Bot " + botSerial + " Custom Intent Parameter: " + c.Params.ParamName + " - " + c.Params.ParamValue)
++		intentParams = map[string]string{c.Params.ParamName: c.Params.ParamValue}
++		isParam = true
++	}
++
++	go func() {
++		if c.LuaScript != "" {
++			err := scripting.RunLuaScript(botSerial, c.LuaScript)
++			if err != nil {
++				logger.Println("Error running Lua script: " + err.Error())
++			}
++		}
++	}()
++
++	var args []string
++	for _, arg := range c.ExecArgs {
++		switch arg {
++		case "!botSerial":
++			arg = botSerial
++		case "!speechText":
++			arg = "\"" + voiceText + "\""
++		case "!intentName":
++			arg = c.Name
++		case "!locale":
++			arg = vars.APIConfig.STT.Language
++		}
++		args = append(args, arg)
++	}
++	var customIntentExec *exec.Cmd
++	if len(args) == 0 {
++		logger.Println("Bot " + botSerial + " Executing: " + c.Exec)
++		customIntentExec = exec.Command(c.Exec)
++	} else {
++		logger.Println("Bot " + botSerial + " Executing: " + c.Exec + " " + strings.Join(args, " "))
++		customIntentExec = exec.Command(c.Exec, args...)
++	}
++	var out bytes.Buffer
++	var stderr bytes.Buffer
++	customIntentExec.Stdout = &out
++	customIntentExec.Stderr = &stderr
++	err := customIntentExec.Run()
++	if err != nil {
++		fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
++	}
++	logger.Println("Bot " + botSerial + " Custom Intent Exec Output: " + strings.TrimSpace(string(out.String())))
++
++	if c.IsSystemIntent {
++		// A system intent returns its output in json format
++		var resp systemIntentResponseStruct
++		err := json.Unmarshal(out.Bytes(), &resp)
++		if err == nil && resp.Status == "ok" {
++			logger.Println("Bot " + botSerial + " System intent parsed and executed successfully")
++			IntentPass(req, resp.ReturnIntent, voiceText, intentParams, isParam)
++		}
++	} else {
++		IntentPass(req, c.Intent, voiceText, intentParams, isParam)
++	}
++}
++
++// hermesTriggerRe mirrors ask_hermes.py's TRIGGER_RE (Go port), EXCEPT
++// extractHermesQuestion does NOT fall back to the original text when
++// nothing is left after stripping -- that Python-side fallback was how a
++// bare "ask hermes" ended up being sent to Hermes AS the question. An
++// empty result here correctly means "no real question was asked."
++var hermesTriggerRe = regexp.MustCompile(`(?i)^\s*(ask|tell|hey)?\s*(hermes|her\s+mes|her\s+me|hermies|hermie)\s*(to|that|if|a\s+question)?\s*[,:]?\s*`)
++
++func extractHermesQuestion(voiceText string) string {
++	return strings.TrimSpace(hermesTriggerRe.ReplaceAllString(strings.TrimSpace(voiceText), ""))
++}
++
++// runAskHermesWithQuestion routes a follow-up utterance directly to the
++// intent_ask_hermes custom intent as the question, bypassing normal
++// intent/LLM routing entirely. Called from ProcessTextAll when
++// ConsumePendingHermesQuestion reports a pending reprompt for this ESN.
++func runAskHermesWithQuestion(req interface{}, botSerial, question string) bool {
++	for _, c := range vars.CustomIntents {
++		if c.Name == "intent_ask_hermes" {
++			runCustomIntentExec(req, c, question, botSerial)
++			return true
++		}
++	}
++	logger.Println("Bot " + botSerial + " had a pending Hermes question but intent_ask_hermes is no longer configured -- dropping")
++	return false
++}
++
+ func pluginFunctionHandler(req interface{}, voiceText string, botSerial string) bool {
+ 	matched := false
+ 	var intent string
+@@ -239,6 +299,45 @@ func pluginFunctionHandler(req interface{}, voiceText string, botSerial string)
+ 	return matched
+ }
+ 
++// SocialLLMIntents lists built-in (en-US.json) intents that are treated as
++// UNMATCHED when Knowledge.LLMFirst is on, so these conversational/social
++// utterances fall through to the LLM for a real spoken reply instead of a canned
++// built-in response. Added 2026-09-26b (Hermes), per the owner: "any of his core
++// commands, or setting changes to his display or sounds should go to him before
++// the llm" - core commands/actions/settings (timers, volume, eye color, movement,
++// games, weather, clock, photo, sleep, charger, etc.) are NOT in this list and
++// keep matching built-in first exactly as before, llm_first or not.
++var SocialLLMIntents = []string{
++	"intent_greeting_hello",
++	"intent_greeting_goodmorning",
++	"intent_greeting_goodnight",
++	"intent_greeting_goodbye",
++	"intent_seasonal_happynewyear",
++	"intent_seasonal_happyholidays",
++	"intent_character_age",
++	"intent_imperative_praise",
++	"intent_imperative_abuse",
++	"intent_imperative_apologize",
++	"intent_imperative_love",
++	"intent_imperative_affirmative",
++	"intent_imperative_negative",
++	"intent_knowledge_promptquestion",
++	// 2026-09-27 bug hunt (Hermes): built-in "what is your name" intent -- moved to
++	// SOCIAL so it gets the LLM persona (name: Little Man) instead of the stock
++	// CORE canned reply ("Vector"). Needs a chipper rebuild+redeploy to take effect;
++	// left unbuilt pending the owner OK (see project_vector.md bug-hunt notes).
++	"intent_names_ask",
++}
++
++func isSocialLLMIntent(name string) bool {
++	for _, s := range SocialLLMIntents {
++		if s == name {
++			return true
++		}
++	}
++	return false
++}
++
+ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent, isOpus bool) bool {
+ 	var botSerial string
+ 	var req2 *vtt.IntentRequest
+@@ -254,65 +353,192 @@ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent
+ 		req3 = str
+ 		botSerial = req3.Device
+ 	}
+-	var matched int = 0
+-	var intentNum int = 0
+-	var successMatched bool = false
+ 	voiceText = strings.ToLower(voiceText)
++
++	// Ask-Hermes-with-empty-question fix (2026-09-27, Hermes): if the
++	// PREVIOUS turn armed a "what do you want to ask Hermes?" reprompt for
++	// this robot, this WHOLE utterance is the answer -- send it straight
++	// to ask_hermes, bypassing CORE/SOCIAL matching and the LLM entirely.
++	if ConsumePendingHermesQuestion(botSerial) {
++		logger.Println("Bot " + botSerial + " routing follow-up utterance to ask_hermes as the pending question")
++		return runAskHermesWithQuestion(req, botSerial, voiceText)
++	}
++
+ 	pluginMatched := pluginFunctionHandler(req, voiceText, botSerial)
+ 	customIntentMatched := customIntentHandler(req, voiceText, botSerial)
+-	if !customIntentMatched && !pluginMatched {
+-		logger.Println("Not a custom intent")
+-		// Look for a perfect match first
+-		for _, b := range intents {
+-			for _, c := range b.Keyphrases {
+-				if voiceText == strings.ToLower(c) {
+-					logger.Println("Bot " + botSerial + " Perfect match for intent " + b.Name + " (" + strings.ToLower(c) + ")")
+-					if isOpus {
+-						ParamChecker(req, b.Name, voiceText, botSerial)
+-					} else {
+-						prehistoricParamChecker(req, b.Name, voiceText)
+-					}
+-					successMatched = true
+-					matched = 1
+-					break
++	if customIntentMatched || pluginMatched {
++		logger.Println("This is a custom intent or plugin!")
++		return true
++	}
++	logger.Println("Not a custom intent")
++
++	result := findIntentMatch(voiceText, intents, vars.APIConfig.Knowledge.LLMFirst)
++
++	for _, note := range result.DeferredSocialLogs {
++		logger.Println("Bot " + botSerial + " " + note)
++	}
++
++	if !result.Found {
++		if result.FellBackFromSocial {
++			logger.Println("Bot " + botSerial + " no CORE match found after full scan - falling back to SOCIAL intent match, llm_first on, routing to LLM")
++		}
++		// Fast command classification (2026-09-29, live-10, Hermes): before
++		// falling through to the LLM chat path, where a resulting
++		// {{doIntent||...}} call is unreliable app-sourced-intent delivery
++		// (see classify.go's header and pendingintent.go), ask the local
++		// model directly whether this utterance is one of the whitelisted
++		// commands. A confident match is sent as the voice STREAM's intent
++		// result -- exactly like a keyphrase CORE match, never touching
++		// AppIntent/doIntent -- and the LLM chat turn is skipped entirely.
++		// NONE/timeout/error falls straight through to the existing
++		// SOCIAL/LLM path, unchanged.
++		if vars.APIConfig.Knowledge.Enable && vars.APIConfig.Knowledge.LLMFirst {
++			if intentName, ok := ClassifyCommandIntent(voiceText); ok {
++				logger.Println("Bot " + botSerial + " fast classifier matched " + intentName + " for '" + voiceText + "' - sending as voice intent result, skipping LLM chat")
++				EndConversation(botSerial)
++				if isOpus {
++					ParamChecker(req, intentName, voiceText, botSerial)
++				} else {
++					prehistoricParamChecker(req, intentName, voiceText)
+ 				}
++				return true
+ 			}
+-			if matched == 1 {
+-				matched = 0
+-				break
+-			}
+-			intentNum = intentNum + 1
+ 		}
+-		// Not found? Then let's be happy with a bare substring search
+-		if !successMatched {
+-			intentNum = 0
+-			matched = 0
+-			for _, b := range intents {
+-				for _, c := range b.Keyphrases {
+-					if strings.Contains(voiceText, strings.ToLower(c)) && !b.RequireExactMatch {
+-						logger.Println("Bot " + botSerial + " Partial match for intent " + b.Name + " (" + strings.ToLower(c) + ")")
+-						if isOpus {
+-							ParamChecker(req, b.Name, voiceText, botSerial)
+-						} else {
+-							prehistoricParamChecker(req, b.Name, voiceText)
+-						}
+-						successMatched = true
+-						matched = 1
+-						break
+-					}
+-				}
+-				if matched == 1 {
+-					matched = 0
+-					break
++		return false
++	}
++
++	matchKind := "Perfect"
++	if !result.IsPerfect {
++		matchKind = "Partial"
++	}
++	logger.Println("Bot " + botSerial + " " + matchKind + " match for intent " + result.IntentName + " (" + result.Keyphrase + ")")
++	// Conversation mode (2026-09-26d, Hermes): a genuine CORE intent match
++	// (never a deferred SOCIAL match -- those don't reach here, see
++	// findIntentMatch) is a real command like "explore" or "set a timer" --
++	// end any active auto-listen conversation rather than re-opening the
++	// mic after it runs.
++	EndConversation(botSerial)
++	if isOpus {
++		ParamChecker(req, result.IntentName, voiceText, botSerial)
++	} else {
++		prehistoricParamChecker(req, result.IntentName, voiceText)
++	}
++	return true
++}
++
++// intentMatchResult is findIntentMatch's pure result: which intent (if any)
++// matched, and any SOCIAL-intent matches that were deferred along the way
++// (surfaced as pre-formatted log lines so findIntentMatch stays side-effect
++// free and directly unit-testable).
++type intentMatchResult struct {
++	Found               bool
++	IntentName          string
++	Keyphrase           string
++	IsPerfect           bool
++	FellBackFromSocial  bool
++	DeferredSocialLogs  []string
++}
++
++// findIntentMatch is the pure matching decision at the heart of
++// ProcessTextAll, split out 2026-09-26c (Hermes) so it can be unit-tested
++// directly with no req/gRPC mocking required. It has NO side effects
++// (no logging, no ParamChecker dispatch) -- callers turn its result into
++// log lines / dispatch calls.
++//
++// Fix 2026-09-26c (Hermes): a SOCIAL-intent match (perfect or substring)
++// used to immediately stop the ENTIRE search and route to the LLM, even
++// when a later intent in the list was a genuine CORE match ("turn your
++// eyes red" substring-matched SOCIAL intent_imperative_affirmative on
++// "yes" inside "eyes", and the search stopped there before ever checking
++// later intents). Now: scan ALL intents for a CORE (non-SOCIAL) match
++// first, in both the perfect-match pass and the substring pass; a SOCIAL
++// match found along the way is deferred (recorded, not acted on) and does
++// NOT stop the scan. Only if no CORE match exists in either pass do we
++// report "not found" with FellBackFromSocial=true, so the caller routes to
++// the LLM -- same as the original llm_first-on SOCIAL-routing behavior.
++func findIntentMatch(voiceText string, intents []vars.JsonIntent, llmFirst bool) intentMatchResult {
++	var deferredLogs []string
++	var socialFallbackLogged bool
++
++	deferOrReturn := func(b vars.JsonIntent, kp string, isPerfect bool) (intentMatchResult, bool) {
++		if llmFirst && isSocialLLMIntent(b.Name) {
++			if !socialFallbackLogged {
++				kind := "Perfect"
++				if !isPerfect {
++					kind = "Partial"
+ 				}
+-				intentNum = intentNum + 1
++				deferredLogs = append(deferredLogs, kind+" match for SOCIAL intent "+b.Name+" ("+kp+") - llm_first on, deferring to keep looking for a CORE match")
++				socialFallbackLogged = true
+ 			}
++			return intentMatchResult{}, false
+ 		}
+-	} else {
+-		logger.Println("This is a custom intent or plugin!")
+-		successMatched = true
++		return intentMatchResult{
++			Found:      true,
++			IntentName: b.Name,
++			Keyphrase:  kp,
++			IsPerfect:  isPerfect,
++		}, true
+ 	}
+-	return successMatched
++
++	// Perfect match pass (whole utterance == keyphrase)
++	for _, b := range intents {
++		for _, c := range b.Keyphrases {
++			kp := strings.ToLower(c)
++			if voiceText != kp {
++				continue
++			}
++			if res, ok := deferOrReturn(b, kp, true); ok {
++				res.DeferredSocialLogs = deferredLogs
++				return res
++			}
++			break // move to next intent -- a deferred social match consumes this intent
++		}
++	}
++
++	// Not found? Then let's be happy with a bare substring search
++	for _, b := range intents {
++		if b.RequireExactMatch {
++			continue
++		}
++		for _, c := range b.Keyphrases {
++			kp := strings.ToLower(c)
++			if !keyphraseMatches(voiceText, kp) {
++				continue
++			}
++			if res, ok := deferOrReturn(b, kp, false); ok {
++				res.DeferredSocialLogs = deferredLogs
++				return res
++			}
++			break
++		}
++	}
++
++	return intentMatchResult{
++		Found:               false,
++		FellBackFromSocial:  socialFallbackLogged,
++		DeferredSocialLogs:  deferredLogs,
++	}
++}
++
++// keyphraseMatches reports whether keyphrase appears in voiceText as a
++// substring match, the same as the original `strings.Contains` behavior,
++// EXCEPT that short keyphrases (<=4 chars, e.g. "yes", "no") must match on
++// word boundaries -- otherwise "yes" matches inside "eyes", "no" matches
++// inside "snow"/"know", etc. Added 2026-09-26c (Hermes) alongside the
++// SOCIAL/CORE scan-order fix above; this closes the same class of bug at
++// the source for the shortest, highest-collision-risk keyphrases.
++var shortKeyphraseBoundaryCache = map[string]*regexp.Regexp{}
++
++func keyphraseMatches(voiceText string, keyphrase string) bool {
++	if len(keyphrase) > 4 {
++		return strings.Contains(voiceText, keyphrase)
++	}
++	re, ok := shortKeyphraseBoundaryCache[keyphrase]
++	if !ok {
++		re = regexp.MustCompile(`\b` + regexp.QuoteMeta(keyphrase) + `\b`)
++		shortKeyphraseBoundaryCache[keyphrase] = re
++	}
++	return re.MatchString(voiceText)
+ }
+ 
+ func KnowledgeGraphResponseIG(req *vtt.IntentGraphRequest, spokenText string, queryText string) error {

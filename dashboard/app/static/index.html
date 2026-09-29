@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Vector Dashboard</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --border: #e2e4e9;
+    --accent: #2563eb;
+    --good: #16a34a;
+    --bad: #dc2626;
+    --warn: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --text: #e8eaed;
+      --muted: #9aa1ac;
+      --border: #262a33;
+      --accent: #5b8dfd;
+      --good: #34d399;
+      --bad: #f87171;
+      --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: 40px;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+  }
+  header h1 {
+    margin: 0 0 8px 0;
+    font-size: 18px;
+  }
+  .statusrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.good { background: var(--good); }
+  .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 12px 16px 0 16px;
+  }
+  section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  section h2 {
+    margin: 0 0 10px 0;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  section h2 .updated {
+    font-size: 11px;
+    font-weight: normal;
+    color: var(--muted);
+  }
+  .entry {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .entry:last-child { border-bottom: none; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  .flag {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--warn);
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+    padding: 0 5px;
+    margin-left: 6px;
+  }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 6px 0; }
+  .grid-thumbs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 8px;
+  }
+  .grid-thumbs img {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  a { color: var(--accent); }
+  .err { color: var(--bad); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🤖 Vector Dashboard</h1>
+  <div class="statusrow" id="statusrow">
+    <span class="pill"><span class="dot" id="dot-online"></span><span id="txt-online">checking…</span></span>
+    <span class="pill"><span class="dot" id="dot-docked"></span><span id="txt-docked">—</span></span>
+    <span class="pill"><span class="dot" id="dot-battery"></span><span id="txt-battery">—</span></span>
+  </div>
+</header>
+
+<main>
+
+  <section id="sec-now">
+    <h2>Now <span class="updated" id="upd-now"></span></h2>
+    <div id="now-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-heard">
+    <h2>Heard and said <span class="updated" id="upd-heard"></span></h2>
+    <div id="heard-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-saw">
+    <h2>Saw <span class="updated" id="upd-saw"></span></h2>
+    <div id="saw-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-learned">
+    <h2>Learned <span class="updated" id="upd-learned"></span></h2>
+    <div id="learned-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-quiz">
+    <h2>Quiz scores <span class="updated" id="upd-quiz"></span></h2>
+    <div id="quiz-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-faults">
+    <h2>Faults <span class="updated" id="upd-faults"></span></h2>
+    <div id="faults-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-photos">
+    <h2>Photos</h2>
+    <div id="photos-body" class="empty">Loading…</div>
+  </section>
+
+  <section id="sec-coral">
+    <h2>Coral</h2>
+    <div class="empty">coming soon: detections, known/unknown people, model versions</div>
+  </section>
+
+  <p class="small muted" style="text-align:center;">Vector Dashboard v1 · polls every 20s · read-only</p>
+
+</main>
+
+<script>
+const POLL_MS = 20000;
+
+function fmtAgo(sec) {
+  if (sec === null || sec === undefined) return "";
+  if (sec < 90) return Math.round(sec) + "s ago";
+  if (sec < 3600) return Math.round(sec / 60) + "m ago";
+  return Math.round(sec / 3600) + "h ago";
+}
+
+function esc(s) {
+  if (s === null || s === undefined) return "";
+  return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+function setUpdated(id) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+async function getJSON(path) {
+  const r = await fetch(path, {cache: "no-store"});
+  if (!r.ok) throw new Error(path + " -> " + r.status);
+  return r.json();
+}
+
+async function refreshNow() {
+  try {
+    const d = await getJSON("/api/now");
+    const h = d.health || {};
+    const b = d.battery || {};
+
+    const dotOnline = document.getElementById("dot-online");
+    const txtOnline = document.getElementById("txt-online");
+    if (h.online) {
+      dotOnline.className = "dot good";
+      txtOnline.textContent = "online";
+    } else {
+      dotOnline.className = "dot bad";
+      txtOnline.textContent = "offline / stale";
+    }
+
+    const dotDocked = document.getElementById("dot-docked");
+    const txtDocked = document.getElementById("txt-docked");
+    if (b && b.is_on_charger_platform) {
+      dotDocked.className = "dot good";
+      txtDocked.textContent = "docked";
+    } else if (b) {
+      dotDocked.className = "dot warn";
+      txtDocked.textContent = "off charger";
+    } else {
+      dotDocked.className = "dot";
+      txtDocked.textContent = "docked: unknown";
+    }
+
+    const dotBatt = document.getElementById("dot-battery");
+    const txtBatt = document.getElementById("txt-battery");
+    if (b && b.battery_level !== undefined && b.battery_level !== null) {
+      const lvl = b.battery_level; // wire-pod scale: 1=low,2=mid,3=full (approx)
+      dotBatt.className = "dot " + (lvl >= 3 ? "good" : lvl <= 1 ? "bad" : "warn");
+      const volts = b.battery_volts ? ` (${b.battery_volts.toFixed(2)}V)` : "";
+      const chg = b.is_charging ? " · charging" : "";
+      txtBatt.textContent = `battery ${lvl}${volts}${chg}`;
+    } else {
+      dotBatt.className = "dot";
+      txtBatt.textContent = "battery: unknown";
+    }
+
+    const now = document.getElementById("now-body");
+    let rows = [];
+    if (h.latest) {
+      rows.push(`<div class="entry">Health check: loss=${esc(h.latest.loss)} rtt=${esc(h.latest.rtt)} pod=${esc(h.latest.pod)} brain=${esc(h.latest.brain)} voice(5m)=${esc(h.latest.voice)} container=${esc(h.latest.container)} <span class="muted small">(${fmtAgo(h.age_seconds)})</span></div>`);
+    } else {
+      rows.push(`<div class="entry muted">No health.log data yet.</div>`);
+    }
+    if (d.battery_error && !b) {
+      rows.push(`<div class="entry err">Battery API error: ${esc(d.battery_error)}</div>`);
+    } else if (d.battery_error) {
+      rows.push(`<div class="entry err small">Battery API last call failed (${esc(d.battery_error)}) — showing last-known value.</div>`);
+    }
+    now.innerHTML = rows.join("");
+    setUpdated("upd-now");
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refreshHeard() {
+  try {
+    const d = await getJSON("/api/conversations");
+    const body = document.getElementById("heard-body");
+    if (!d.entries || !d.entries.length) {
+      body.innerHTML = `<div class="empty">No conversations logged yet.</div>`;
+    } else {
+      body.innerHTML = d.entries.map(e => {
+        if (e.raw) return `<div class="entry mono">${esc(e.vector)}</div>`;
+        const flag = e.no_response ? `<span class="flag">no response captured</span>` : "";
+        return `<div class="entry">
+          <div class="small muted">${esc(e.time)} NY${e.intent ? " · " + esc(e.intent) : ""}</div>
+          <div><strong>the owner:</strong> ${esc(e.the owner)}</div>
+          <div><strong>Vector:</strong> ${esc(e.vector)}${flag}</div>
+        </div>`;
+      }).join("");
+    }
+    setUpdated("upd-heard");
+  } catch (e) { console.error(e); }
+}
+
+async function refreshSaw() {
+  try {
+    const d = await getJSON("/api/saw");
+    const body = document.getElementById("saw-body");
+    let html = "";
+
+    html += `<div class="small muted" style="margin-bottom:6px;">Curious-mode (recent)</div>`;
+    if (d.curious_log && d.curious_log.length) {
+      html += d.curious_log.slice(0, 8).map(l => `<div class="entry mono">${esc(l)}</div>`).join("");
+    } else {
+      html += `<div class="empty">No curious-mode log lines yet — cache may still be warming up.</div>`;
+    }
+
+    html += `<div class="small muted" style="margin:10px 0 6px;">Night observations</div>`;
+    if (d.night_observations && d.night_observations.length) {
+      html += d.night_observations.slice(-8).reverse().map(l => `<div class="entry small">${esc(l.replace(/^-\s*/, ""))}</div>`).join("");
+    } else {
+      html += `<div class="empty">None recorded.</div>`;
+    }
+
+    html += `<div class="small muted" style="margin:10px 0 6px;">Things learned to recognize</div>`;
+    if (d.learned_to_recognize && d.learned_to_recognize.length) {
+      html += d.learned_to_recognize.map(l => `<div class="entry small">${esc(l.replace(/^-\s*/, ""))}</div>`).join("");
+    } else {
+      html += `<div class="empty">None recorded.</div>`;
+    }
+
+    body.innerHTML = html;
+    setUpdated("upd-saw");
+  } catch (e) { console.error(e); }
+}
+
+async function refreshLearned() {
+  try {
+    const d = await getJSON("/api/learning");
+    const body = document.getElementById("learned-body");
+    let html = `<div class="entry small">${d.lesson_count} lesson(s) in lessons.jsonl</div>`;
+
+    if (d.latest_lessons && d.latest_lessons.length) {
+      html += d.latest_lessons.map(l => `<div class="entry small"><strong>Q:</strong> ${esc(l.prompt)}<br><strong>A:</strong> ${esc(l.ideal_answer)}</div>`).join("");
+    }
+
+    if (d.topics && d.topics.length) {
+      html += `<div class="small muted" style="margin:10px 0 6px;">Topics</div>`;
+      html += `<div class="entry small">${d.topics.map(esc).join(" · ")}</div>`;
+    }
+
+    if (d.corrections && d.corrections.length) {
+      html += `<div class="small muted" style="margin:10px 0 6px;">Corrections from Hermes (latest)</div>`;
+      html += d.corrections.slice(-6).reverse().map(l => `<div class="entry small">${esc(l.replace(/^-\s*/, ""))}</div>`).join("");
+    }
+
+    body.innerHTML = html;
+    setUpdated("upd-learned");
+  } catch (e) { console.error(e); }
+}
+
+async function refreshQuiz() {
+  try {
+    const d = await getJSON("/api/eval");
+    const body = document.getElementById("quiz-body");
+    if (!d.scores || !d.scores.length) {
+      body.innerHTML = `<div class="empty">No quiz rounds logged yet.</div>`;
+    } else {
+      let rows = d.scores.map(s => `<tr>
+        <td>${esc(s.round)}</td>
+        <td>${s.num}/${s.den}</td>
+        <td class="small">${esc(s.notes)}</td>
+      </tr>`).join("");
+      body.innerHTML = `<table><thead><tr><th>Round</th><th>Score</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+    setUpdated("upd-quiz");
+  } catch (e) { console.error(e); }
+}
+
+async function refreshFaults() {
+  try {
+    const d = await getJSON("/api/faults");
+    const body = document.getElementById("faults-body");
+    if (!d.faults || !d.faults.length) {
+      body.innerHTML = `<div class="empty">No fault/restart/dropped-command lines in the recent log tail. Good sign.</div>`;
+    } else {
+      body.innerHTML = d.faults.map(l => `<div class="entry mono">${esc(l)}</div>`).join("");
+    }
+    setUpdated("upd-faults");
+  } catch (e) { console.error(e); }
+}
+
+async function refreshPhotos() {
+  try {
+    const d = await getJSON("/api/snapshots");
+    const body = document.getElementById("photos-body");
+    if (!d.snapshots || !d.snapshots.length) {
+      body.innerHTML = `<div class="empty">No snapshots yet — curious mode doesn't save copies here yet (see dashboard notes).</div>`;
+    } else {
+      body.innerHTML = `<div class="grid-thumbs">` + d.snapshots.map(s =>
+        `<a href="/snapshots/${encodeURIComponent(s.file)}" target="_blank" title="${esc(s.description || '')}">
+          <img loading="lazy" src="/snapshots/${encodeURIComponent(s.file)}">
+        </a>`
+      ).join("") + `</div>`;
+    }
+  } catch (e) { console.error(e); }
+}
+
+function refreshAll() {
+  refreshNow();
+  refreshHeard();
+  refreshSaw();
+  refreshLearned();
+  refreshQuiz();
+  refreshFaults();
+  refreshPhotos();
+}
+
+refreshAll();
+setInterval(refreshAll, POLL_MS);
+</script>
+
+</body>
+</html>
