@@ -1,0 +1,303 @@
+From 9af814aaf577bebcd764c4591af1b800f3ea43fa Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 03/10] step2: fast ack at LLM stream open + wake-word
+ interrupt grace period
+
+---
+ .../pkg/wirepod/ttr/e2e_llm_timing_test.go    | 119 ++++++++++++++++++
+ chipper/pkg/wirepod/ttr/kgsim.go              |  31 ++++-
+ chipper/pkg/wirepod/ttr/kgsim_interrupt.go    |  37 +++++-
+ .../pkg/wirepod/ttr/kgsim_interrupt_test.go   |  35 ++++++
+ 4 files changed, 217 insertions(+), 5 deletions(-)
+ create mode 100644 chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/kgsim_interrupt_test.go
+
+diff --git a/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go b/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
+new file mode 100644
+index 0000000..3ab2e9a
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
+@@ -0,0 +1,119 @@
++package wirepod_ttr
++
++// e2e_llm_timing_test.go -- added 2026-09-30 (live-16 incremental rebuild,
++// Hermes) as the per-step end-to-end LATENCY gate the owner asked for: "must
++// not interfere with STT" (step 2) and "end-to-end latency must be <= live-9's
++// for the same clips" (all steps). This measures the part of the pipeline
++// that actually determines whether the robot hears anything within its
++// ~9.2s client-side cloud-intent timeout: how long CreateAIReq +
++// CreateChatCompletionStream takes to open against the REAL configured
++// backend (vector-brain proxy at :11500 -> Ollama), and how long until the
++// first content token and the full response arrive. Does NOT require a
++// real robot connection (CreateAIReq/CreateChatCompletionStream never touch
++// robot.Conn) -- STT timing itself is covered separately by the Vosk-level
++// e2e harness (pkg/wirepod/stt/vosk/Vosk_e2e_test.go), which is unaffected
++// by any of these 5 steps since none of them touch Vosk.go/speechrequest.go.
++//
++// Skipped by default (set E2E_LLM_LIVE=1 to run) since it makes a REAL
++// network call against the production Ollama/vector-brain backend and can
++// take anywhere from ~5s to several minutes per the observed brain.log tail
++// latency -- not something to run in a normal CI loop.
++
++import (
++	"context"
++	"errors"
++	"io"
++	"os"
++	"testing"
++	"time"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++	openai "github.com/sashabaranov/go-openai"
++)
++
++func e2eLLMSetup(t *testing.T) {
++	t.Helper()
++	if os.Getenv("E2E_LLM_LIVE") == "" {
++		t.Skip("skipping: set E2E_LLM_LIVE=1 to exercise the real Ollama/vector-brain backend")
++	}
++	// Matches the REAL production apiConfig.json Knowledge block exactly
++	// (provider/endpoint/model/key) -- set directly on the in-memory
++	// vars.APIConfig struct, never touching the apiConfig.json file on
++	// disk (no WriteConfigToDisk call anywhere in this path for the
++	// "custom" provider branch).
++	vars.APIConfig.Knowledge.Enable = true
++	vars.APIConfig.Knowledge.Provider = "custom"
++	vars.APIConfig.Knowledge.Endpoint = "http://127.0.0.1:11500/v1"
++	vars.APIConfig.Knowledge.Key = "ollama"
++	vars.APIConfig.Knowledge.Model = "qwen3:32b"
++	vars.APIConfig.Knowledge.LLMFirst = true
++	vars.APIConfig.Knowledge.SaveChat = false
++	vars.APIConfig.Knowledge.OpenAIPrompt = "You are Vector, a small desk robot. Keep replies to 1-2 short sentences."
++}
++
++// e2eLLMPhrases are the real transcripts used for this step's latency gate
++// -- the same utterances espeak-ng generated for live15-e2e-audio/, so
++// timing here is directly comparable to what the Vosk harness actually
++// transcribes from those clips.
++var e2eLLMPhrases = []string{
++	"what's a texas rig",
++	"tell me a joke",
++	"free roam if you want",
++	"the fish are biting today",
++}
++
++func TestE2E_LLMTurnTiming(t *testing.T) {
++	e2eLLMSetup(t)
++	for _, p := range e2eLLMPhrases {
++		p := p
++		t.Run(p, func(t *testing.T) {
++			runLLMTimingCase(t, p)
++		})
++	}
++}
++
++// runLLMTimingCase is shared by the pre-classify (steps 1-3) and
++// post-classify (steps 4-5) variants of this test -- the classify variant
++// wraps this with its own ClassifyCommandIntent timing/short-circuit first.
++func runLLMTimingCase(t *testing.T, transcript string) {
++	t.Helper()
++	aireq := CreateAIReq(transcript, "e2e-timing-test", false, false)
++
++	conf := openai.DefaultConfig(vars.APIConfig.Knowledge.Key)
++	conf.BaseURL = vars.APIConfig.Knowledge.Endpoint
++	c := openai.NewClientWithConfig(conf)
++
++	streamStart := time.Now()
++	stream, err := c.CreateChatCompletionStream(context.Background(), aireq)
++	streamOpenElapsed := time.Since(streamStart)
++	if err != nil {
++		t.Fatalf("CreateChatCompletionStream error after %s: %v", streamOpenElapsed, err)
++	}
++	defer stream.Close()
++
++	var firstContentElapsed time.Duration
++	gotFirst := false
++	var fullDone time.Duration
++	chunks := 0
++	for {
++		resp, err := stream.Recv()
++		if errors.Is(err, io.EOF) {
++			fullDone = time.Since(streamStart)
++			break
++		}
++		if err != nil {
++			t.Fatalf("stream.Recv() error after %s (streamOpen=%s, firstContent=%s): %v", time.Since(streamStart), streamOpenElapsed, firstContentElapsed, err)
++		}
++		if len(resp.Choices) > 0 && resp.Choices[0].Delta.Content != "" {
++			chunks++
++			if !gotFirst {
++				firstContentElapsed = time.Since(streamStart)
++				gotFirst = true
++			}
++		}
++	}
++	t.Logf("%q: streamOpen=%s firstContent=%s fullDone=%s chunks=%d", transcript, streamOpenElapsed, firstContentElapsed, fullDone, chunks)
++	if !gotFirst {
++		t.Fatalf("%q: stream completed with EOF but no content was ever received", transcript)
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 32a5762..534f569 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -8,6 +8,7 @@ import (
+ 	"log"
+ 	"regexp"
+ 	"strings"
++	"sync"
+ 	"time"
+ 	"unicode"
+ 
+@@ -265,6 +266,31 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 	speakReady := make(chan string)
+ 	successIntent := make(chan bool)
+ 
++	// Fix 2026-09-29 (Bug 1 - stale-state lost answer; see
++	// kgsim_interrupt.go for the matching interrupt-watcher fix). Root
++	// cause: the robot has its own hardcoded ~9.2s client-side cloud-intent
++	// timeout (UserIntentComponent.UpdatePendingIntent.GotError ->
++	// cloud_response_failedTimeout) that fires independently of wire-pod.
++	// The only prior "fast ack" (intent_greeting_hello sent to the robot's
++	// stream to satisfy that timeout) was gated on the LLM streaming a full
++	// first sentence -- fine most of the time, but a slow-to-punctuate
++	// response (or one immediately following an aborted prior command,
++	// which leaves residual trigger-word state per
++	// UserIntentComponent.Update.WaitingForTriggerWordGetInToFinish.ForceClear)
++	// can lose that race. sendAck now fires the moment the LLM stream
++	// successfully opens (classify + network handshake only, typically
++	// <1s), well before the 9.2s ceiling, and is wrapped in sync.Once so
++	// the original gate below (kept as a fallback for isKG=false) can't
++	// double-send the same IntentResponse on an already-resolved stream.
++	var ackOnce sync.Once
++	sendAck := func() {
++		if !isKG {
++			ackOnce.Do(func() {
++				IntentPass(req, "intent_greeting_hello", transcribedText, map[string]string{}, false)
++			})
++		}
++	}
++
+ 	aireq := CreateAIReq(transcribedText, esn, false, isKG)
+ 
+ 	stream, err := c.CreateChatCompletionStream(ctx, aireq)
+@@ -299,6 +325,7 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 		Role: openai.ChatMessageRoleAssistant,
+ 	})
+ 	fmt.Println("LLM stream response: ")
++	sendAck()
+ 	go func() {
+ 		for {
+ 			response, err := stream.Recv()
+@@ -396,9 +423,7 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 	}()
+ 	for is := range successIntent {
+ 		if is {
+-			if !isKG {
+-				IntentPass(req, "intent_greeting_hello", transcribedText, map[string]string{}, false)
+-			}
++			sendAck()
+ 			break
+ 		} else {
+ 			return "", errors.New("llm returned no response")
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_interrupt.go b/chipper/pkg/wirepod/ttr/kgsim_interrupt.go
+index 0f9daa3..23103e2 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim_interrupt.go
++++ b/chipper/pkg/wirepod/ttr/kgsim_interrupt.go
+@@ -54,6 +54,24 @@ func InterruptKGSimWhenTouchedOrWaked(rob *vector.Vector, stop chan bool, stopSt
+ 		}
+ 	}
+ 	if origValueGotten {
++		// Fix 2026-09-29 (Bug 1 - stale-state lost answer). Evidence: the
++		// 2026-09-29 16:04 UTC "remember what I asked you a minute ago"
++		// turn was killed by "Interrupting LLM response (source: wake
++		// word)" ~10s after its OWN triggering wake word (16:04:02.890
++		// engine-side) and only ~137ms after the robot's own
++		// cloud_response_failedTimeout for this same turn -- there was no
++		// second genuine @wakeword.triggered in vector.log in between. A
++		// wake_word event arriving shortly after this watcher starts is
++		// almost always a delayed/echoed delivery of the SAME trigger word
++		// that started the current turn (or a synthetic wake_word signal
++		// from the robot's own engine clearing stale trigger-word state,
++		// e.g. UserIntentComponent...ForceClear after an aborted prior
++		// command like an explore-from-charger abort), not a fresh
++		// interrupt request from the user. Give it a short startup grace
++		// window before honoring wake_word as an interrupt; a wake word
++		// after the window still interrupts immediately, same as before.
++		watcherStarted := time.Now()
++		const interruptGracePeriod = 1500 * time.Millisecond
+ 		for {
+ 			var resp *vectorpb.EventResponse
+ 			resp, err = strm.Recv()
+@@ -69,8 +87,12 @@ func InterruptKGSimWhenTouchedOrWaked(rob *vector.Vector, stop chan bool, stopSt
+ 					valsAboveValue = 0
+ 				}
+ 			case *vectorpb.Event_WakeWord:
+-				logger.Println("Interrupting LLM response (source: wake word)")
+-				stopResponse = true
++				if wakeWordInterruptShouldIgnore(time.Since(watcherStarted), interruptGracePeriod) {
++					logger.Println("Ignoring wake word event within interrupt-watcher startup grace period (likely stale/echoed trigger, not a fresh interrupt)")
++				} else {
++					logger.Println("Interrupting LLM response (source: wake word)")
++					stopResponse = true
++				}
+ 			default:
+ 			}
+ 			if valsAboveValue > valsAboveValueMax {
+@@ -90,3 +112,14 @@ func InterruptKGSimWhenTouchedOrWaked(rob *vector.Vector, stop chan bool, stopSt
+ 	}
+ 	return false
+ }
++
++// wakeWordInterruptShouldIgnore is the pure grace-period decision behind
++// the Event_WakeWord case above, split out 2026-09-29 (Bug 1 fix) so it's
++// directly unit-testable with no gRPC stream/robot connection required --
++// same pattern as bcontrol.go's behaviorControlShouldRelease. A wake_word
++// event arriving before sinceWatcherStart reaches gracePeriod is treated
++// as stale/echoed (see the fix comment above) and ignored; at or after the
++// grace period it's a genuine interrupt.
++func wakeWordInterruptShouldIgnore(sinceWatcherStart, gracePeriod time.Duration) bool {
++	return sinceWatcherStart < gracePeriod
++}
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_interrupt_test.go b/chipper/pkg/wirepod/ttr/kgsim_interrupt_test.go
+new file mode 100644
+index 0000000..525fe60
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/kgsim_interrupt_test.go
+@@ -0,0 +1,35 @@
++package wirepod_ttr
++
++import (
++	"testing"
++	"time"
++)
++
++// TestWakeWordInterruptShouldIgnore covers the Bug 1 fix (2026-09-29):
++// a wake_word event delivered shortly after the interrupt watcher starts
++// is treated as a stale/echoed delivery of the turn's OWN triggering wake
++// word (or a synthetic engine signal from clearing stale trigger-word
++// state) rather than a genuine new interrupt, per the 16:04 UTC
++// "remember what I asked you a minute ago" incident.
++func TestWakeWordInterruptShouldIgnore(t *testing.T) {
++	const grace = 1500 * time.Millisecond
++	cases := []struct {
++		name string
++		in   time.Duration
++		want bool
++	}{
++		{"immediately after watcher start", 0, true},
++		{"well within grace period", 500 * time.Millisecond, true},
++		{"just under grace period", grace - time.Millisecond, true},
++		{"exactly at grace period boundary", grace, false},
++		{"well after grace period", 5 * time.Second, false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			got := wakeWordInterruptShouldIgnore(c.in, grace)
++			if got != c.want {
++				t.Errorf("wakeWordInterruptShouldIgnore(%v, %v) = %v, want %v", c.in, grace, got, c.want)
++			}
++		})
++	}
++}

@@ -1,0 +1,7 @@
+# Proxmox HOST rule for passing a Coral USB Accelerator into an unprivileged LXC.
+# The device re-enumerates after libedgetpu uploads firmware, so both IDs are
+# needed. 0666 because the container's uid mapping can't use the host's plugdev.
+# Pre-firmware:
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a6e", ATTRS{idProduct}=="089a", MODE="0666"
+# Post-firmware:
+SUBSYSTEM=="usb", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="9302", MODE="0666"

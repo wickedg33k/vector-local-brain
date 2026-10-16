@@ -204,3 +204,24 @@ sudo udevadm control --reload-rules
 │   └── YYYY-MM-DD/
 └── test_images/               # sample images used to validate the service
 ```
+
+## Passing the Coral through to a Proxmox LXC
+
+If the Coral service runs inside an (unprivileged) Proxmox LXC, the USB device
+has to be exposed by the **host**, and it has to survive the firmware
+re-enumeration described above (the bus/device number changes, so binding a
+single `/dev/bus/usb/BBB/DDD` node does not work).
+
+1. On the Proxmox host, install `udev/99-coral-lxc.rules` to
+   `/etc/udev/rules.d/` and reload: `udevadm control --reload && udevadm trigger`.
+2. Add to `/etc/pve/lxc/<CTID>.conf` (USB character devices are major 189):
+   ```
+   lxc.cgroup2.devices.allow: c 189:* rwm
+   lxc.mount.entry: /dev/bus/usb dev/bus/usb none bind,optional,create=dir
+   ```
+3. Restart the container. Inside it, `lsusb` should show `1a6e:089a` before the
+   first model load and `18d1:9302` after. Run the Coral container with
+   `--network host --device /dev/bus/usb:/dev/bus/usb` (no `--privileged`
+   needed; passing the whole bus directory is what survives re-enumeration).
+
+`udev/99-edgetpu-accelerator.rules` (plugdev, 0664) is for bare-metal hosts.

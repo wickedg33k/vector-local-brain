@@ -1,0 +1,478 @@
+From bb0e10e9b9065df957ea4b9c37c4162b58a0f044 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 04/10] step3: sentry voice command (sentrycmd.go +
+ customIntentHandler hookup)
+
+---
+ chipper/pkg/wirepod/ttr/matchIntentSend.go |  11 +
+ chipper/pkg/wirepod/ttr/sentrycmd.go       | 207 +++++++++++++++++++
+ chipper/pkg/wirepod/ttr/sentrycmd_test.go  | 223 +++++++++++++++++++++
+ 3 files changed, 441 insertions(+)
+ create mode 100644 chipper/pkg/wirepod/ttr/sentrycmd.go
+ create mode 100644 chipper/pkg/wirepod/ttr/sentrycmd_test.go
+
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index a633e7b..4c4e2d7 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -134,6 +134,17 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 						}
+ 					}
+ 
++					// Sentry mode voice command (2026-09-29, Hermes) --
++					// see sentrycmd.go for the full design note. Handled
++					// directly (not via the generic exec-script path)
++					// so the phrase matching is a pure, unit-tested Go
++					// function.
++					if c.Name == SentryCmdCustomIntentName {
++						handleSentryCmd(req, botSerial, voiceText)
++						successMatched = true
++						break
++					}
++
+ 					runCustomIntentExec(req, c, voiceText, botSerial)
+ 					successMatched = true
+ 					break
+diff --git a/chipper/pkg/wirepod/ttr/sentrycmd.go b/chipper/pkg/wirepod/ttr/sentrycmd.go
+new file mode 100644
+index 0000000..842c44c
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/sentrycmd.go
+@@ -0,0 +1,207 @@
++package wirepod_ttr
++
++// sentrycmd.go -- voice-triggered sentry-mode on/off/auto control for the
++// Vector curious-mode sentry daemon (vector-curious/curious.py), added
++// 2026-09-29 (Hermes, owner-requested: "sentry mode on/off/auto by
++// voice"). Speech-to-text often mishears "sentry" as "century" --
++// confirmed via a real transcript ("century mode") -- so every phrase in
++// sentryPhraseGroups implicitly also matches its "century" spelling via
++// normalizeSentryVoiceText, rather than doubling every entry by hand.
++//
++// Routing: wired as a single customIntents.json entry
++// (SentryCmdCustomIntentName, "sentry_cmd_custom") whose utterances list
++// is the full sentry+century phrase set. customIntentHandler in
++// matchIntentSend.go checks custom intents BEFORE findIntentMatch's CORE
++// keyphrase scan and BEFORE the fast LLM classifier
++// (ClassifyCommandIntent/classify.go) ever runs -- see ProcessTextAll's
++// call order -- so a sentry phrase can never be swallowed by the
++// classifier or fall through to the LLM chat path. Matched here (special
++// -cased on c.Name, the SAME pattern intent_ask_hermes already uses two
++// cases up in customIntentHandler) instead of going through the generic
++// runCustomIntentExec/exec-script path so the phrase matching itself is a
++// pure, directly unit-tested Go function -- same convention as
++// keyphraseMatches (matchIntentSend.go), decideConversationContinuation
++// (conversation.go), and wakeWordInterruptShouldIgnore
++// (kgsim_interrupt.go) elsewhere in this package.
++//
++// Acks immediately (intent_system_noaudio, no canned reply) via IntentPass
++// before doing the HTTP call to curious.py or speaking the confirmation --
++// same lesson as Bug 1's sendAck-on-stream-open fix in kgsim.go: never
++// leave the robot's own ~9.2s client-side cloud-intent timeout racing
++// against work this side is still doing.
++
++import (
++	"fmt"
++	"io"
++	"net/http"
++	"regexp"
++	"strings"
++	"time"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// SentryCmdCustomIntentName is the customIntents.json entry name
++// customIntentHandler special-cases into handleSentryCmd instead of the
++// generic exec-script path.
++const SentryCmdCustomIntentName = "sentry_cmd_custom"
++
++// sentryControlURL is curious.py's own control HTTP endpoint (see
++// vector-curious/curious.py's start_sentry_control_server) -- 127.0.0.1
++// only. Both vector-pod and vector-curious run with --network host (the
++// host-networking Docker rule) so this reaches it directly, no container
++// DNS needed.
++var sentryControlURL = "http://127.0.0.1:8790/sentry"
++
++const sentryControlTimeout = 5 * time.Second
++
++// sentryConfirmations is what Vector says back for each resolved mode.
++var sentryConfirmations = map[string]string{
++	"on":   "Sentry mode on. I'll keep watch.",
++	"off":  "Sentry off.",
++	"auto": "Sentry back on auto.",
++}
++
++// sentryPhraseGroups maps each mode to the phrases that mean it, written
++// with "sentry" -- classifySentryMode normalizes "century" to "sentry"
++// before matching (see normalizeSentryVoiceText), so every entry here
++// implicitly also matches its "century" mishearing without doubling the
++// list. Order within a group doesn't matter; sentryOrderedModes fixes the
++// GROUP iteration order for determinism.
++var sentryPhraseGroups = map[string][]string{
++	"off": {
++		"sentry mode off",
++		"stop sentry",
++		"sentry off",
++	},
++	"on": {
++		"sentry mode on",
++		"turn on sentry",
++		"sentry on",
++		"start sentry",
++	},
++	"auto": {
++		"sentry mode auto",
++		"sentry automatic",
++		"sentry auto",
++	},
++}
++
++// sentryOrderedModes fixes iteration order for classifySentryMode so
++// matching is deterministic (Go map iteration order is randomized). The
++// phrase lists above don't overlap across groups, so this doesn't change
++// which mode wins for any real utterance -- it just keeps behavior/tests
++// reproducible rather than depending on map-iteration luck. "off" is
++// checked first on purpose: it's the shortest/most safety-relevant phrase
++// set (never leave sentry silently stuck on), so if a future edit ever
++// introduces an accidental overlap, "off" wins the tie.
++var sentryOrderedModes = []string{"off", "on", "auto"}
++
++// SentrySayableModes lists the modes classifySentryMode can return, in
++// the same order as sentryOrderedModes -- exported for tests/tools that
++// want to enumerate valid modes without reaching into the map.
++var SentrySayableModes = append([]string(nil), sentryOrderedModes...)
++
++var sentryCenturyRe = regexp.MustCompile(`\bcentury\b`)
++
++// normalizeSentryVoiceText lowercases voiceText and replaces standalone
++// "century" with "sentry" (word-boundary safe via \b, so a "century"
++// that's part of a longer word isn't mangled -- not expected in practice,
++// but keeps the normalization honest) so every phrase in
++// sentryPhraseGroups implicitly matches its mishearing too.
++func normalizeSentryVoiceText(voiceText string) string {
++	lower := strings.ToLower(voiceText)
++	return sentryCenturyRe.ReplaceAllString(lower, "sentry")
++}
++
++// classifySentryMode is the pure phrase-matching decision behind the
++// sentry voice command, split out so it's directly unit-testable with no
++// gRPC/HTTP/robot connection required -- same pattern as
++// keyphraseMatches/decideConversationContinuation elsewhere in this
++// package. Returns the resolved mode ("on"/"off"/"auto") and ok=true on a
++// match, ok=false (empty mode) otherwise.
++func classifySentryMode(voiceText string) (string, bool) {
++	normalized := normalizeSentryVoiceText(voiceText)
++	for _, mode := range sentryOrderedModes {
++		for _, phrase := range sentryPhraseGroups[mode] {
++			if strings.Contains(normalized, phrase) {
++				return mode, true
++			}
++		}
++	}
++	return "", false
++}
++
++// sentryHTTPClient is a package-level indirection so tests can stub the
++// transport without touching the real network. Production code should
++// never reassign this outside of tests.
++var sentryHTTPClient = &http.Client{Timeout: sentryControlTimeout}
++
++// setSentryOverride tells curious.py's control endpoint to persist the
++// new sentry_manual_override value. Fails safe: any error (network,
++// non-200) is returned to the caller to log, never panics, never retries
++// (matches the fail-safe convention used throughout this package -- see
++// conversation.go/pendingintent.go's header comments).
++func setSentryOverride(mode string) error {
++	url := sentryControlURL + "?mode=" + mode
++	resp, err := sentryHTTPClient.Get(url)
++	if err != nil {
++		return err
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		body, _ := io.ReadAll(resp.Body)
++		return fmt.Errorf("sentry control endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
++	}
++	return nil
++}
++
++// sentryAckFn/sentrySetOverrideFn/sentrySayFn are package-level
++// indirections so handleSentryCmd's orchestration (ack order, error
++// handling) can be unit-tested without a real gRPC stream, HTTP server,
++// or robot connection. Production code should never reassign these
++// outside of tests.
++var (
++	sentryAckFn = func(req interface{}, voiceText string) {
++		IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
++	}
++	sentrySetOverrideFn = setSentryOverride
++	sentryGetRobotFn    = vars.GetRobot
++	sentrySayFn         = sayText
++)
++
++// handleSentryCmd is customIntentHandler's special case for
++// SentryCmdCustomIntentName (see matchIntentSend.go, alongside the
++// intent_ask_hermes special case). Resolves the mode from voiceText, acks
++// the intent stream immediately (see file header -- Bug 1 lesson), then
++// persists the mode via curious.py and speaks the confirmation using the
++// SAME sayText() helper the rest of this package uses (bcontrol.go) -- no
++// competing SDK connection, matches the established pattern (e.g.
++// kgsim.go's Bug 2 explore-from-charger fallback).
++func handleSentryCmd(req interface{}, botSerial, voiceText string) {
++	mode, ok := classifySentryMode(voiceText)
++	// Ack immediately regardless of match outcome -- the robot is
++	// waiting on THIS stream either way, and sentry_cmd_custom only ever
++	// matched in the first place because one of its utterances was a
++	// substring of voiceText (see customIntentHandler), so a "no mode
++	// found" outcome here would only happen if that utterance list and
++	// sentryPhraseGroups ever drift out of sync -- still ack cleanly
++	// rather than leaving the robot hanging on a bug.
++	sentryAckFn(req, voiceText)
++	if !ok {
++		logger.Println("Bot " + botSerial + " sentry_cmd_custom matched but no mode phrase resolved from '" + voiceText + "' - ignoring")
++		return
++	}
++	if err := sentrySetOverrideFn(mode); err != nil {
++		logger.Println("Bot " + botSerial + " sentry: failed to set override to " + mode + ": " + err.Error())
++		return
++	}
++	logger.Println("Bot " + botSerial + " sentry: manual override set to " + mode)
++	robot, err := sentryGetRobotFn(botSerial)
++	if err != nil {
++		logger.Println("Bot " + botSerial + " sentry: override set but couldn't get robot to speak confirmation: " + err.Error())
++		return
++	}
++	sentrySayFn(robot, sentryConfirmations[mode])
++}
+diff --git a/chipper/pkg/wirepod/ttr/sentrycmd_test.go b/chipper/pkg/wirepod/ttr/sentrycmd_test.go
+new file mode 100644
+index 0000000..d97d0cd
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/sentrycmd_test.go
+@@ -0,0 +1,223 @@
++package wirepod_ttr
++
++import (
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++)
++
++// TestClassifySentryMode covers the phrase matching behind the sentry
++// voice command, including the "century" mishearing (a real transcript:
++// "century mode" instead of "sentry mode" -- see sentrycmd.go's header)
++// and utterances embedded in a longer sentence (the robot hears the full
++// transcript, not just the trigger phrase).
++func TestClassifySentryMode(t *testing.T) {
++	cases := []struct {
++		name      string
++		voiceText string
++		wantMode  string
++		wantOK    bool
++	}{
++		// --- off ---
++		{"sentry mode off exact", "sentry mode off", "off", true},
++		{"stop sentry", "stop sentry", "off", true},
++		{"sentry off bare", "sentry off", "off", true},
++		{"century mode off", "century mode off", "off", true},
++		{"stop century", "stop century", "off", true},
++		{"century off bare", "century off", "off", true},
++		{"off embedded in sentence", "hey can you turn sentry mode off please", "off", true},
++
++		// --- on ---
++		{"sentry mode on exact", "sentry mode on", "on", true},
++		{"turn on sentry", "turn on sentry", "on", true},
++		{"sentry on bare", "sentry on", "on", true},
++		{"start sentry", "start sentry", "on", true},
++		{"century mode on", "century mode on", "on", true},
++		{"turn on century", "turn on century", "on", true},
++		{"century on bare", "century on", "on", true},
++		{"start century", "start century", "on", true},
++		{"on embedded in sentence", "could you turn on sentry while i'm out", "on", true},
++
++		// --- auto ---
++		{"sentry mode auto exact", "sentry mode auto", "auto", true},
++		{"sentry automatic", "sentry automatic", "auto", true},
++		{"sentry auto bare", "sentry auto", "auto", true},
++		{"century mode auto", "century mode auto", "auto", true},
++		{"century automatic", "century automatic", "auto", true},
++		{"century auto bare", "century auto", "auto", true},
++
++		// --- case insensitivity ---
++		{"uppercase", "SENTRY MODE ON", "on", true},
++		{"mixed case", "Century Mode Off", "off", true},
++
++		// --- non-matches ---
++		{"unrelated phrase", "what's the weather today", "", false},
++		{"empty string", "", "", false},
++		{"sentry mentioned but no mode word", "i like sentry robots", "", false},
++		{"century mentioned but no mode word", "back to the future part two is set in a different century", "", false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			gotMode, gotOK := classifySentryMode(c.voiceText)
++			if gotOK != c.wantOK {
++				t.Fatalf("classifySentryMode(%q) ok = %v, want %v", c.voiceText, gotOK, c.wantOK)
++			}
++			if gotMode != c.wantMode {
++				t.Fatalf("classifySentryMode(%q) mode = %q, want %q", c.voiceText, gotMode, c.wantMode)
++			}
++		})
++	}
++}
++
++// TestNormalizeSentryVoiceText checks the "century"->"sentry" word-
++// boundary-safe substitution directly.
++func TestNormalizeSentryVoiceText(t *testing.T) {
++	cases := []struct {
++		in   string
++		want string
++	}{
++		{"century mode on", "sentry mode on"},
++		{"CENTURY MODE ON", "sentry mode on"},
++		{"sentry mode on", "sentry mode on"},
++		{"a different century entirely", "a different sentry entirely"},
++		{"centuries", "centuries"}, // word-boundary: "centuries" != "century"
++	}
++	for _, c := range cases {
++		got := normalizeSentryVoiceText(c.in)
++		if got != c.want {
++			t.Errorf("normalizeSentryVoiceText(%q) = %q, want %q", c.in, got, c.want)
++		}
++	}
++}
++
++// TestHandleSentryCmd_HappyPath verifies the full orchestration: ack is
++// sent before the HTTP call (order matters -- see the Bug 1 lesson in the
++// file header), the override HTTP call fires with the resolved mode, and
++// the confirmation is spoken via sayText.
++func TestHandleSentryCmd_HappyPath(t *testing.T) {
++	var events []string
++
++	origAck, origSetOverride, origGetRobot, origSay := sentryAckFn, sentrySetOverrideFn, sentryGetRobotFn, sentrySayFn
++	defer func() {
++		sentryAckFn, sentrySetOverrideFn, sentryGetRobotFn, sentrySayFn = origAck, origSetOverride, origGetRobot, origSay
++	}()
++
++	sentryAckFn = func(req interface{}, voiceText string) {
++		events = append(events, "ack")
++	}
++	sentrySetOverrideFn = func(mode string) error {
++		events = append(events, "set:"+mode)
++		return nil
++	}
++	sentryGetRobotFn = func(esn string) (*vector.Vector, error) {
++		events = append(events, "getrobot")
++		return nil, nil
++	}
++	sentrySayFn = func(robot *vector.Vector, text string) {
++		events = append(events, "say:"+text)
++	}
++
++	handleSentryCmd(nil, "test-esn", "sentry mode on")
++
++	want := []string{"ack", "set:on", "getrobot", "say:" + sentryConfirmations["on"]}
++	if len(events) != len(want) {
++		t.Fatalf("events = %v, want %v", events, want)
++	}
++	for i := range want {
++		if events[i] != want[i] {
++			t.Fatalf("events[%d] = %q, want %q (full: %v)", i, events[i], want[i], events)
++		}
++	}
++}
++
++// TestHandleSentryCmd_NoModeStillAcks: if classifySentryMode somehow
++// finds nothing (utterance-list/phrase-group drift), the intent stream
++// must still be ack'd -- never leave the robot hanging.
++func TestHandleSentryCmd_NoModeStillAcks(t *testing.T) {
++	var events []string
++
++	origAck, origSetOverride := sentryAckFn, sentrySetOverrideFn
++	defer func() { sentryAckFn, sentrySetOverrideFn = origAck, origSetOverride }()
++
++	sentryAckFn = func(req interface{}, voiceText string) { events = append(events, "ack") }
++	sentrySetOverrideFn = func(mode string) error {
++		events = append(events, "set:"+mode)
++		return nil
++	}
++
++	handleSentryCmd(nil, "test-esn", "this utterance matches nothing")
++
++	if len(events) != 1 || events[0] != "ack" {
++		t.Fatalf("events = %v, want [ack] only (no override set when no mode resolved)", events)
++	}
++}
++
++// TestHandleSentryCmd_OverrideErrorStillAcked: an override HTTP failure
++// must not prevent the ack (which already happened) and must not panic
++// trying to speak.
++func TestHandleSentryCmd_OverrideErrorStillAcked(t *testing.T) {
++	var events []string
++
++	origAck, origSetOverride, origGetRobot := sentryAckFn, sentrySetOverrideFn, sentryGetRobotFn
++	defer func() { sentryAckFn, sentrySetOverrideFn, sentryGetRobotFn = origAck, origSetOverride, origGetRobot }()
++
++	sentryAckFn = func(req interface{}, voiceText string) { events = append(events, "ack") }
++	sentrySetOverrideFn = func(mode string) error {
++		events = append(events, "set:"+mode)
++		return errors.New("curious.py unreachable")
++	}
++	sentryGetRobotFn = func(esn string) (*vector.Vector, error) {
++		events = append(events, "getrobot-SHOULD-NOT-HAPPEN")
++		return nil, nil
++	}
++
++	handleSentryCmd(nil, "test-esn", "sentry off")
++
++	want := []string{"ack", "set:off"}
++	if len(events) != len(want) {
++		t.Fatalf("events = %v, want %v (robot must not be contacted after a failed override set)", events, want)
++	}
++}
++
++// TestSetSentryOverride_HTTP exercises the real setSentryOverride against
++// an httptest server, covering both the success and non-200 paths -- the
++// ONLY test in this file that touches net/http instead of the
++// sentrySetOverrideFn indirection, matching the convention used for
++// classify.go's own HTTP-touching tests elsewhere in this package.
++func TestSetSentryOverride_HTTP(t *testing.T) {
++	origURL, origClient := sentryControlURL, sentryHTTPClient
++	defer func() { sentryControlURL, sentryHTTPClient = origURL, origClient }()
++
++	var gotPath string
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		gotPath = r.URL.RequestURI()
++		w.WriteHeader(http.StatusOK)
++		w.Write([]byte(`{"ok":true}`))
++	}))
++	defer srv.Close()
++
++	sentryControlURL = srv.URL + "/sentry"
++	sentryHTTPClient = srv.Client()
++
++	if err := setSentryOverride("auto"); err != nil {
++		t.Fatalf("setSentryOverride(auto) = %v, want nil", err)
++	}
++	if gotPath != "/sentry?mode=auto" {
++		t.Fatalf("request path = %q, want /sentry?mode=auto", gotPath)
++	}
++
++	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusBadRequest)
++		w.Write([]byte(`{"ok":false,"error":"invalid mode"}`))
++	}))
++	defer srv2.Close()
++	sentryControlURL = srv2.URL + "/sentry"
++	sentryHTTPClient = srv2.Client()
++
++	if err := setSentryOverride("bogus"); err == nil {
++		t.Fatalf("setSentryOverride(bogus) = nil error, want an error on non-200")
++	}
++}

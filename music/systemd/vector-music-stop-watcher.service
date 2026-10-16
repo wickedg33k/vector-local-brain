@@ -1,0 +1,18 @@
+[Unit]
+Description=Stop vector-music playback when someone starts talking to Vector
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# Adjust to wherever you installed music/stop_on_voice.sh. VECTOR_BASE is the
+# directory that contains vector-pod/ (the wire-pod data dir).
+Environment=VECTOR_BASE=/srv/vector
+ExecStart=/srv/vector/vector-pod/stop_on_voice.sh
+Restart=always
+RestartSec=2
+# Needs access to the Docker socket (docker logs / docker exec vector-pod).
+User=root
+
+[Install]
+WantedBy=multi-user.target

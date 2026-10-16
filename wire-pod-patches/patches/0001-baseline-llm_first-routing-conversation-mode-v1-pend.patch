@@ -1,0 +1,4024 @@
+From a0abea886554bc4d8256940226dea7963ca3c162 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 01/10] baseline: llm_first routing, conversation mode v1,
+ pending-intent + escalation hook, SDK animation endpoints, stream-end/VAD
+ tuning, keyphrase tuning
+
+---
+ chipper/intent-data/en-US.json                | 278 +-----------
+ chipper/jdocs/placeholder                     |   0
+ chipper/pkg/vars/config.go                    |  28 ++
+ chipper/pkg/wirepod/preqs/intent.go           |   8 +
+ chipper/pkg/wirepod/preqs/intent_graph.go     |   8 +
+ chipper/pkg/wirepod/preqs/knowledgegraph.go   |  17 +
+ chipper/pkg/wirepod/sdkapp/animation.go       | 133 ++++++
+ chipper/pkg/wirepod/sdkapp/animation_test.go  |  73 +++
+ chipper/pkg/wirepod/sdkapp/server.go          |  72 ++-
+ .../wirepod/speechrequest/speechrequest.go    |  86 +++-
+ .../speechrequest/speechrequest_test.go       |  81 ++++
+ .../pkg/wirepod/speechrequest/streamend.go    |  29 ++
+ .../wirepod/speechrequest/streamend_test.go   |  30 ++
+ chipper/pkg/wirepod/stt/vosk/Vosk.go          |  23 +-
+ chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go | 241 ++++++++++
+ chipper/pkg/wirepod/ttr/askhermes_test.go     |  74 ++++
+ .../pkg/wirepod/ttr/backup_turnaround_test.go | 121 +++++
+ chipper/pkg/wirepod/ttr/bcontrol.go           | 133 +++++-
+ chipper/pkg/wirepod/ttr/bcontrol_test.go      |  67 +++
+ chipper/pkg/wirepod/ttr/conversation.go       | 257 +++++++++++
+ chipper/pkg/wirepod/ttr/conversation_test.go  | 276 ++++++++++++
+ .../pkg/wirepod/ttr/intentkeyphrase_test.go   |  82 ++++
+ chipper/pkg/wirepod/ttr/kgsim.go              |  83 ++--
+ chipper/pkg/wirepod/ttr/kgsim_cmds.go         | 125 +++++-
+ chipper/pkg/wirepod/ttr/llmflush.go           |  95 ++++
+ chipper/pkg/wirepod/ttr/llmflush_test.go      | 110 +++++
+ chipper/pkg/wirepod/ttr/matchIntentSend.go    | 418 +++++++++++++-----
+ .../wirepod/ttr/matchIntentSend_scan_test.go  | 130 ++++++
+ chipper/pkg/wirepod/ttr/pendinghermes.go      |  99 +++++
+ chipper/pkg/wirepod/ttr/pendinghermes_test.go |  48 ++
+ chipper/pkg/wirepod/ttr/pendingintent.go      | 133 ++++++
+ chipper/pkg/wirepod/ttr/pendingintent_test.go | 154 +++++++
+ chipper/session-certs/placeholder             |   0
+ 33 files changed, 3066 insertions(+), 446 deletions(-)
+ delete mode 100755 chipper/jdocs/placeholder
+ create mode 100644 chipper/pkg/wirepod/sdkapp/animation.go
+ create mode 100644 chipper/pkg/wirepod/sdkapp/animation_test.go
+ create mode 100644 chipper/pkg/wirepod/speechrequest/speechrequest_test.go
+ create mode 100644 chipper/pkg/wirepod/speechrequest/streamend.go
+ create mode 100644 chipper/pkg/wirepod/speechrequest/streamend_test.go
+ create mode 100644 chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/askhermes_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/backup_turnaround_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/bcontrol_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/conversation.go
+ create mode 100644 chipper/pkg/wirepod/ttr/conversation_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/intentkeyphrase_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/llmflush.go
+ create mode 100644 chipper/pkg/wirepod/ttr/llmflush_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/matchIntentSend_scan_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/pendinghermes.go
+ create mode 100644 chipper/pkg/wirepod/ttr/pendinghermes_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/pendingintent.go
+ create mode 100644 chipper/pkg/wirepod/ttr/pendingintent_test.go
+ delete mode 100644 chipper/session-certs/placeholder
+
+diff --git a/chipper/intent-data/en-US.json b/chipper/intent-data/en-US.json
+index 6e34eb4..925563d 100755
+--- a/chipper/intent-data/en-US.json
++++ b/chipper/intent-data/en-US.json
+@@ -1,277 +1 @@
+-[
+-	{
+-		"name" : "intent_names_username_extend", 
+-		"keyphrases": ["name is", "native is", "names", "name's", "my name is" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_weather_extend", 
+-		"keyphrases" : ["weather", "whether", "the other", "the water", "no other", "weather forecast", "weather tomorrow", "whats the weather" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_names_ask", 
+-		"keyphrases" : ["my name", "who am", "who am i"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_eyecolor",
+-		"keyphrases" : ["eye color", "colo", "i call her", "i foller", "icolor", "ecce", "erior", "ichor", "agricola", "change", "oracular", "oracle", "set your eye color to"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_character_age", 
+-		"keyphrases" : ["older", "how old", "old are you", "old or yo", "how there you"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_explore_start", 
+-		"keyphrases" : ["start", "plor", "owing", "tailoring", "oding", "oring", "pling", "start exploring"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_charger", 
+-		"keyphrases" : ["charge", "home", "go to your", "church", "find your ch", "charger" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_sleep",
+-		"keyphrases" : ["flee", "sleep", "sheep", "go to sleep" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_system_noaudio",
+-		"keyphrases" : ["[blank_audio]", "[door opens]", "[sighs]" ],
+-		"requiresexact": true
+-	},
+-	{	
+-		"name": "intent_greeting_goodmorning", 
+-		"keyphrases" : ["morning", "mourning", "mooning", "it bore", "afternoon", "after noon", "after whom", "good morning" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_greeting_goodnight", 
+-		"keyphrases" : ["night", "might", "goodnight" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_greeting_goodbye", 
+-		"keyphrases" : ["good bye", "good by", "good buy", "goodbye" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_seasonal_happynewyear",
+-		"keyphrases" : ["fireworks", "new year", "happy new", "happy to", "have been", "i now you", "no year", "enee", "i never", "knew her", "hobhouse", "bennie" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_seasonal_happyholidays", 
+-		"keyphrases" : ["he holds", "christmas", "behold", "holiday" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_amazon_signin", 
+-		"keyphrases" : ["in intellect", "fine in electa", "in alex", "ing alex", "in an elect", "to alex", "in angelica", "up alexa", "sign in to alexa" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_amazon_signin", 
+-		"keyphrases" : ["in outlet", "i now of elea", "out alexa", "out of ale" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_forward",
+-		"keyphrases" : ["forward", "for ward", "for word", "move forward", "forwards" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnaround", 
+-		"keyphrases" : ["around", "one eighty", "one ate he", "turn around" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnleft", 
+-		"keyphrases" : ["rn left", "go left", "e left", "ed left", "ernest" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_turnright", 
+-		"keyphrases" : ["rn right", "go right", "e right", "ernie", "credit", "ed right" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_rollcube",
+-		"keyphrases" : ["roll cu", "roll your cu", "all your cu", "roll human", "yorke", "old your he", "roll your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_popawheelie", 
+-		"keyphrases" : ["pop a w", "polwhele", "olwen", "i wieland", "do a wheel", "doorstone", "thibetan", "powell", "welst", "a wheel", "willie", "a really", "o' billy", "pop a wheelie", "do a wheel stand" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_fistbump", 
+-		"keyphrases" : ["this pomp", "this pump", "bump", "fistb", "fistf", "this book", "pisto", "with pomp", "fison", "first", "fifth", "were fifteen", "if bump", "wisdom", "this bu", "fist bomb", "fist ball", "this ball", "system", "fistbump" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_play_blackjack", 
+-		"keyphrases" : ["black", "cards", "game", "play blackjack" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_imperative_affirmative",
+-		"keyphrases" : ["yes", "correct", "sure", "yes please" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_negative", 
+-		"keyphrases" : ["no", "dont", "no thanks" ],
+-		"requiresexact": true
+-	},
+-	{	
+-		"name": "intent_photo_take_extend", 
+-		"keyphrases" : ["photo", "foto", "selby", "capture", "picture", "take a photo of me" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_praise", 
+-		"keyphrases" : ["good", "awesome", "also", "as some", "of them", "battle", "t rob", "the ro", "amazing", "woodcourt", "good robot" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_abuse",
+-		"keyphrases" : ["bad", "that ro", "ad ro", "a root", "hate", "horrible", "bad robot" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_apologize", 
+-		"keyphrases" : ["sorry", "apologize", "apologise", "the tory", "nevermind", "never mind", "im sorry" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_backup", 
+-		"keyphrases" : ["back", "back up", "backwards","beck"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumedown",
+-		"keyphrases" : ["all you down", "volume down", "down volume", "down the volume", "quieter", "turn the volume down" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumeup", 
+-		"keyphrases" : ["all you up", "volume up", "up volume", "up the volume", "louder" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_lookatme", 
+-		"keyphrases" : ["stare", "at me" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_volumelevel_extend",
+-		"keyphrases" : ["all you", "volume", "loudness" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_shutup", 
+-		"keyphrases" : ["shut up" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_greeting_hello", 
+-		"keyphrases" : ["hello", "our you", "follow", "for you", "far you", "how about you", "how are you", "the low", "the loo", "our are you" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_come", 
+-		"keyphrases" : ["come to me", "come here" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_love",
+-		"keyphrases" : ["love you", "dove you", "i love you" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_knowledge_promptquestion", 
+-		"keyphrases" : ["question", "weston", "i have a question", "conversation", "lets talk", "let's talk" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_checktimer", 
+-		"keyphrases" : ["check timer", "check the timer", "check the time her", "check time her", "check time her", "check time of her", "checked the timer", "checked the time her", "checked the time of her" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_global_stop_extend", 
+-		"keyphrases" : ["up the timer", "stop timer", "cancel the", "cancel timer", "stop clock", "stop be", "stopped t", "stopped be", "stopped at", "stop the" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_settimer_extend",
+-		"keyphrases" : ["timer", "time for", "time of for", "time or", "time of", "set a timer for" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_clock_time", 
+-		"keyphrases" : ["time is it", "the time", "what time", "clock", "what time is it" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_quiet", 
+-		"keyphrases" : ["quiet", "stop", "be quiet" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_dance", 
+-		"keyphrases" : ["dance", "dancing", "thence", "dance to the beat", "the beat", "boogie", "to the music" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_pickupcube",
+-		"keyphrases" : ["pickup", "pick up" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_fetchcube", 
+-		"keyphrases" : ["fetch your cu", "fetch cu", "fetch the cu", "bring to me", "bring me", "bring me your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_imperative_findcube", 
+-		"keyphrases" : ["your cu", "the cu", "find your cube" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_anytrick", 
+-		"keyphrases" : ["trick", "something cool", "some thing cool", "do a trick" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_message_recordmessage_extend",
+-		"keyphrases" : ["record" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_message_playmessage_extend", 
+-		"keyphrases" : ["play message", "play method", "play a message", "play a method" ],
+-		"requiresexact": false
+-	},
+-		{	
+-		"name": "intent_blackjack_hit", 
+-		"keyphrases" : ["hit"],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_blackjack_stand", 
+-		"keyphrases" : ["stand", "stan" ],
+-		"requiresexact": false
+-	},
+-	{	
+-		"name": "intent_play_keepaway",
+-		"keyphrases": ["keepaway", "keep away", "play keepaway" ],
+-		"requiresexact": false
+-	}
+-]
++[{"name": "intent_names_username_extend", "keyphrases": ["name is", "native is", "names", "name's", "my name is"], "requiresexact": false}, {"name": "intent_weather_extend", "keyphrases": ["weather", "whether", "the other", "the water", "no other", "weather forecast", "weather tomorrow", "whats the weather"], "requiresexact": false}, {"name": "intent_names_ask", "keyphrases": ["my name", "who am", "who am i"], "requiresexact": false}, {"name": "intent_imperative_eyecolor", "keyphrases": ["eye color", "colo", "i call her", "i foller", "icolor", "ecce", "erior", "ichor", "agricola", "change", "oracular", "oracle", "set your eye color to"], "requiresexact": false}, {"name": "intent_character_age", "keyphrases": ["older", "how old", "old are you", "old or yo", "how there you"], "requiresexact": false}, {"name": "intent_explore_start", "keyphrases": ["start", "plor", "owing", "tailoring", "oding", "oring", "pling", "start exploring", "explore mode", "explorer mode", "exploring mode", "go explore", "go exploring"], "requiresexact": false}, {"name": "intent_system_charger", "keyphrases": ["charge", "home", "go to your", "church", "find your ch", "charger"], "requiresexact": false}, {"name": "intent_system_sleep", "keyphrases": ["flee", "sleep", "sheep", "go to sleep"], "requiresexact": false}, {"name": "intent_system_noaudio", "keyphrases": ["[blank_audio]", "[door opens]", "[sighs]"], "requiresexact": true}, {"name": "intent_greeting_goodmorning", "keyphrases": ["morning", "mourning", "mooning", "it bore", "afternoon", "after noon", "after whom", "good morning"], "requiresexact": false}, {"name": "intent_greeting_goodnight", "keyphrases": ["night", "might", "goodnight"], "requiresexact": false}, {"name": "intent_greeting_goodbye", "keyphrases": ["good bye", "good by", "good buy", "goodbye"], "requiresexact": false}, {"name": "intent_seasonal_happynewyear", "keyphrases": ["fireworks", "new year", "happy new", "happy to", "have been", "i now you", "no year", "enee", "i never", "knew her", "hobhouse", "bennie"], "requiresexact": false}, {"name": "intent_seasonal_happyholidays", "keyphrases": ["he holds", "christmas", "behold", "holiday"], "requiresexact": false}, {"name": "intent_amazon_signin", "keyphrases": ["in intellect", "fine in electa", "in alex", "ing alex", "in an elect", "to alex", "in angelica", "up alexa", "sign in to alexa"], "requiresexact": false}, {"name": "intent_amazon_signin", "keyphrases": ["in outlet", "i now of elea", "out alexa", "out of ale"], "requiresexact": false}, {"name": "intent_imperative_forward", "keyphrases": ["forward", "for ward", "for word", "move forward", "forwards"], "requiresexact": false}, {"name": "intent_imperative_turnaround", "keyphrases": ["turn around", "one eighty", "one ate he"], "requiresexact": false}, {"name": "intent_imperative_turnleft", "keyphrases": ["rn left", "go left", "e left", "ed left", "ernest"], "requiresexact": false}, {"name": "intent_imperative_turnright", "keyphrases": ["rn right", "go right", "e right", "ernie", "credit", "ed right"], "requiresexact": false}, {"name": "intent_play_rollcube", "keyphrases": ["roll cu", "roll your cu", "all your cu", "roll human", "yorke", "old your he", "roll your cube"], "requiresexact": false}, {"name": "intent_play_popawheelie", "keyphrases": ["pop a w", "polwhele", "olwen", "i wieland", "do a wheel", "doorstone", "thibetan", "powell", "welst", "a wheel", "willie", "a really", "o' billy", "pop a wheelie", "do a wheel stand"], "requiresexact": false}, {"name": "intent_play_fistbump", "keyphrases": ["this pomp", "this pump", "bump", "fistb", "fistf", "this book", "pisto", "with pomp", "fison", "first", "fifth", "were fifteen", "if bump", "wisdom", "this bu", "fist bomb", "fist ball", "this ball", "system", "fistbump"], "requiresexact": false}, {"name": "intent_play_blackjack", "keyphrases": ["black", "cards", "game", "play blackjack"], "requiresexact": false}, {"name": "intent_imperative_affirmative", "keyphrases": ["yes", "correct", "sure", "yes please"], "requiresexact": false}, {"name": "intent_imperative_negative", "keyphrases": ["no", "dont", "no thanks"], "requiresexact": true}, {"name": "intent_photo_take_extend", "keyphrases": ["photo", "foto", "selby", "capture", "picture", "take a photo of me"], "requiresexact": false}, {"name": "intent_imperative_praise", "keyphrases": ["good", "awesome", "also", "as some", "of them", "battle", "t rob", "the ro", "amazing", "woodcourt", "good robot"], "requiresexact": false}, {"name": "intent_imperative_abuse", "keyphrases": ["bad", "that ro", "ad ro", "a root", "hate", "horrible", "bad robot"], "requiresexact": false}, {"name": "intent_imperative_apologize", "keyphrases": ["sorry", "apologize", "apologise", "the tory", "nevermind", "never mind", "im sorry"], "requiresexact": false}, {"name": "intent_imperative_backup", "keyphrases": ["back up", "backup", "backwards", "go backwards", "reverse", "move back", "beck"], "requiresexact": false}, {"name": "intent_imperative_volumedown", "keyphrases": ["all you down", "volume down", "down volume", "down the volume", "quieter", "turn the volume down"], "requiresexact": false}, {"name": "intent_imperative_volumeup", "keyphrases": ["all you up", "volume up", "up volume", "up the volume", "louder"], "requiresexact": false}, {"name": "intent_imperative_lookatme", "keyphrases": ["stare", "at me"], "requiresexact": false}, {"name": "intent_imperative_volumelevel_extend", "keyphrases": ["all you", "volume", "loudness"], "requiresexact": false}, {"name": "intent_imperative_shutup", "keyphrases": ["shut up"], "requiresexact": false}, {"name": "intent_greeting_hello", "keyphrases": ["hello", "our you", "follow", "for you", "far you", "how about you", "how are you", "the low", "the loo", "our are you"], "requiresexact": false}, {"name": "intent_imperative_come", "keyphrases": ["come to me", "come here"], "requiresexact": false}, {"name": "intent_imperative_love", "keyphrases": ["love you", "dove you", "i love you"], "requiresexact": false}, {"name": "intent_knowledge_promptquestion", "keyphrases": ["question", "weston", "i have a question", "conversation", "lets talk", "let's talk"], "requiresexact": false}, {"name": "intent_clock_checktimer", "keyphrases": ["check timer", "check the timer", "check the time her", "check time her", "check time her", "check time of her", "checked the timer", "checked the time her", "checked the time of her"], "requiresexact": false}, {"name": "intent_global_stop_extend", "keyphrases": ["up the timer", "stop timer", "cancel the", "cancel timer", "stop clock", "stop be", "stopped t", "stopped be", "stopped at", "stop the"], "requiresexact": false}, {"name": "intent_clock_settimer_extend", "keyphrases": ["timer", "time for", "time of for", "time or", "time of", "set a timer for"], "requiresexact": false}, {"name": "intent_clock_time", "keyphrases": ["time is it", "the time", "what time", "clock", "what time is it"], "requiresexact": false}, {"name": "intent_imperative_quiet", "keyphrases": ["quiet", "stop", "be quiet"], "requiresexact": false}, {"name": "intent_imperative_dance", "keyphrases": ["dance", "dancing", "thence", "dance to the beat", "the beat", "boogie", "to the music"], "requiresexact": false}, {"name": "intent_play_pickupcube", "keyphrases": ["pickup", "pick up"], "requiresexact": false}, {"name": "intent_imperative_fetchcube", "keyphrases": ["fetch your cu", "fetch cu", "fetch the cu", "bring to me", "bring me", "bring me your cube"], "requiresexact": false}, {"name": "intent_imperative_findcube", "keyphrases": ["your cu", "the cu", "find your cube"], "requiresexact": false}, {"name": "intent_play_anytrick", "keyphrases": ["trick", "something cool", "some thing cool", "do a trick"], "requiresexact": false}, {"name": "intent_message_recordmessage_extend", "keyphrases": ["record"], "requiresexact": false}, {"name": "intent_message_playmessage_extend", "keyphrases": ["play message", "play method", "play a message", "play a method"], "requiresexact": false}, {"name": "intent_blackjack_hit", "keyphrases": ["hit"], "requiresexact": false}, {"name": "intent_blackjack_stand", "keyphrases": ["stand", "stan"], "requiresexact": false}, {"name": "intent_play_keepaway", "keyphrases": ["keepaway", "keep away", "play keepaway"], "requiresexact": false}]
+\ No newline at end of file
+diff --git a/chipper/jdocs/placeholder b/chipper/jdocs/placeholder
+deleted file mode 100755
+index e69de29..0000000
+diff --git a/chipper/pkg/vars/config.go b/chipper/pkg/vars/config.go
+index 40b60e6..dd0d521 100644
+--- a/chipper/pkg/vars/config.go
++++ b/chipper/pkg/vars/config.go
+@@ -33,13 +33,30 @@ type apiConfig struct {
+ 		OpenAIVoiceWithEnglish bool    `json:"openai_voice_with_english"`
+ 		SaveChat               bool    `json:"save_chat"`
+ 		CommandsEnable         bool    `json:"commands_enable"`
++		LLMFirst               bool    `json:"llm_first"`
+ 		Endpoint               string  `json:"endpoint"`
+ 		TopP                   float32 `json:"top_p"`
+ 		Temperature            float32 `json:"temp"`
++		// ConversationMode and ConversationTimeoutSec added 2026-09-26d (Hermes),
++		// owner-approved "conversation mode" for Vector: after an LLM reply
++		// finishes speaking and behavior control is released, wire-pod
++		// auto-triggers the wake word (same mechanism as
++		// /api-sdk/trigger_wake_word) so the owner doesn't have to say "Hey
++		// Vector" again for a follow-up. See pkg/wirepod/ttr/conversation.go
++		// for the state machine and termination rules.
++		ConversationMode       bool    `json:"conversation_mode"`
++		ConversationTimeoutSec int     `json:"conversation_timeout_sec"`
+ 	} `json:"knowledge"`
+ 	STT struct {
+ 		Service  string `json:"provider"`
+ 		Language string `json:"language"`
++		// EndOfSpeechSilenceMs and MinTotalAudioMs added 2026-09-27 (Hermes)
++		// for the "he is cutting me off" fix -- see
++		// pkg/wirepod/speechrequest/speechrequest.go's DetectEndOfSpeech.
++		// Both are milliseconds; 0/unset falls back to the defaults there
++		// (DefaultEndOfSpeechSilenceMs / DefaultMinTotalAudioMs).
++		EndOfSpeechSilenceMs int `json:"end_of_speech_silence_ms"`
++		MinTotalAudioMs      int `json:"min_total_audio_ms"`
+ 	} `json:"STT"`
+ 	Server struct {
+ 		// false for ip, true for escape pod
+@@ -129,6 +146,17 @@ func ReadConfig() {
+ 			APIConfig.Knowledge.Model = "meta-llama/Llama-3-70b-chat-hf"
+ 		}
+ 
++		// Added 2026-09-26d (Hermes): a config file written before conversation
++		// mode existed will unmarshal ConversationTimeoutSec as 0. Treat 0 as
++		// "not set" and fall back to the 12s default rather than a 0s timeout,
++		// which would end every conversation instantly. ConversationMode itself
++		// intentionally has NO such fallback -- its zero value (false) is the
++		// correct fail-safe default for configs that predate this feature and
++		// haven't gone through the deploy script.
++		if APIConfig.Knowledge.ConversationTimeoutSec <= 0 {
++			APIConfig.Knowledge.ConversationTimeoutSec = 12
++		}
++
+ 		writeBytes, _ := json.Marshal(APIConfig)
+ 		os.WriteFile(ApiConfigPath, writeBytes, 0644)
+ 		logger.Println("API config successfully read")
+diff --git a/chipper/pkg/wirepod/preqs/intent.go b/chipper/pkg/wirepod/preqs/intent.go
+index 6513dbc..191b348 100755
+--- a/chipper/pkg/wirepod/preqs/intent.go
++++ b/chipper/pkg/wirepod/preqs/intent.go
+@@ -19,10 +19,18 @@ func (s *Server) ProcessIntent(req *vtt.IntentRequest) (*vtt.IntentResponse, err
+ 		var err error
+ 		transcribedText, err = sttHandler(speechReq)
+ 		if err != nil {
++			// Conversation mode (2026-09-26d, Hermes): an STT error ends any
++			// active auto-listen conversation rather than leaving it dangling.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "voice processing error: "+err.Error(), map[string]string{"error": err.Error()}, true)
+ 			return nil, nil
+ 		}
+ 		if strings.TrimSpace(transcribedText) == "" {
++			// Conversation mode (2026-09-26d, Hermes): the design's "silence
++			// ends the conversation" rule -- an empty transcript from a
++			// follow-up auto-listen means the user didn't say anything, so
++			// stop re-triggering.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "", map[string]string{}, false)
+ 			return nil, nil
+ 		}
+diff --git a/chipper/pkg/wirepod/preqs/intent_graph.go b/chipper/pkg/wirepod/preqs/intent_graph.go
+index 4e8e565..c7ffc86 100755
+--- a/chipper/pkg/wirepod/preqs/intent_graph.go
++++ b/chipper/pkg/wirepod/preqs/intent_graph.go
+@@ -18,10 +18,18 @@ func (s *Server) ProcessIntentGraph(req *vtt.IntentGraphRequest) (*vtt.IntentGra
+ 		var err error
+ 		transcribedText, err = sttHandler(speechReq)
+ 		if err != nil {
++			// Conversation mode (2026-09-26d, Hermes): an STT error ends any
++			// active auto-listen conversation rather than leaving it dangling.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "voice processing error: "+err.Error(), map[string]string{"error": err.Error()}, true)
+ 			return nil, nil
+ 		}
+ 		if strings.TrimSpace(transcribedText) == "" {
++			// Conversation mode (2026-09-26d, Hermes): the design's "silence
++			// ends the conversation" rule -- an empty transcript from a
++			// follow-up auto-listen means the user didn't say anything, so
++			// stop re-triggering.
++			ttr.EndConversation(req.Device)
+ 			ttr.IntentPass(req, "intent_system_noaudio", "", map[string]string{}, false)
+ 			return nil, nil
+ 		}
+diff --git a/chipper/pkg/wirepod/preqs/knowledgegraph.go b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+index 1d0a9fa..8867f28 100755
+--- a/chipper/pkg/wirepod/preqs/knowledgegraph.go
++++ b/chipper/pkg/wirepod/preqs/knowledgegraph.go
+@@ -71,8 +71,25 @@ func streamingKG(req *vtt.KnowledgeGraphRequest, speechReq sr.SpeechRequest) str
+ 	// have him start "thinking" right after the text is transcribed
+ 	transcribedText, err := sttHandler(speechReq)
+ 	if err != nil {
++		// Conversation mode (2026-09-26e, Hermes): a knowledge_question
++		// AppIntent follow-up (conversation.go's auto-listen -- see
++		// TriggerFollowUpListen) always arrives here, never through
++		// ProcessTextAll/intent.go's own noaudio handling. An STT error mid
++		// conversation should end it rather than leave stale state around.
++		ttr.EndConversation(req.Device)
+ 		return "There was an error."
+ 	}
++	if strings.TrimSpace(transcribedText) == "" {
++		// Conversation mode (2026-09-26e, Hermes): the design's "silence
++		// ends the conversation" rule. Unlike intent.go/intent_graph.go,
++		// this KG-only pathway had NO empty-transcript guard at all --
++		// without this, a silent conversation-mode follow-up would feed an
++		// empty message straight to the LLM and just keep re-listening,
++		// bounded only by the cap/timeout instead of actually ending on
++		// silence as designed.
++		ttr.EndConversation(req.Device)
++		return ""
++	}
+ 	kg := pb.KnowledgeGraphResponse{
+ 		Session:     req.Session,
+ 		DeviceId:    req.Device,
+diff --git a/chipper/pkg/wirepod/sdkapp/animation.go b/chipper/pkg/wirepod/sdkapp/animation.go
+new file mode 100644
+index 0000000..219c418
+--- /dev/null
++++ b/chipper/pkg/wirepod/sdkapp/animation.go
+@@ -0,0 +1,133 @@
++package sdkapp
++
++// animation.go -- added 2026-09-26e (Hermes) for the day-cycle scheduler,
++// whose separate Python SDK connection gets UNAUTHENTICATED 401 talking to
++// the robot directly. Exposes wire-pod's OWN already-working robot
++// connection over HTTP instead, at /api-sdk/play_animation and
++// /api-sdk/list_anim_triggers (wired in server.go's SdkapiHandler switch).
++//
++// play_animation takes behavior control briefly (same OVERRIDE_BEHAVIORS
++// request / ControlGrantedResponse / ControlRelease pattern already used in
++// pkg/wirepod/ttr/bcontrol.go for the LLM's speech path), plays either an
++// animation TRIGGER (?trigger=, resolved to a contextual clip by the
++// robot's own behavior system) or an exact clip (?anim=, same call shape
++// DoPlayAnimation/DoPlayAnimationWI in pkg/wirepod/ttr/kgsim_cmds.go use
++// for {{playAnimationWI||...}}), then releases control. The whole
++// operation is bounded by animationRPCTimeout so a stuck robot can't hang
++// the HTTP request forever.
++
++import (
++	"context"
++	"fmt"
++	"time"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++)
++
++// animationRPCTimeout bounds both /api-sdk/list_anim_triggers and
++// /api-sdk/play_animation end to end (control request + play + release for
++// the latter). Kept at the requested "<=10s" ceiling.
++const animationRPCTimeout = 10 * time.Second
++
++// validatePlayAnimationParams is the pure parameter-validation logic for
++// /api-sdk/play_animation, split out so it's unit-testable without a robot
++// connection: exactly the "must provide trigger= or anim=" rule.
++func validatePlayAnimationParams(trigger, clip string) error {
++	if trigger == "" && clip == "" {
++		return fmt.Errorf("must provide trigger= (an animation trigger name) or anim= (an exact clip name)")
++	}
++	return nil
++}
++
++// animationTriggerNames is the pure extraction logic for
++// /api-sdk/list_anim_triggers, split out so it's unit-testable without a
++// robot connection: pulls the plain trigger name strings out of a
++// ListAnimationTriggersResponse.
++func animationTriggerNames(resp *vectorpb.ListAnimationTriggersResponse) []string {
++	triggers := resp.GetAnimationTriggerNames()
++	names := make([]string, 0, len(triggers))
++	for _, t := range triggers {
++		names = append(names, t.GetName())
++	}
++	return names
++}
++
++// playAnimationWithControl acquires behavior control, plays trigger (if
++// non-empty) or clip (if trigger is empty), then releases control -- all
++// bounded by timeout. validatePlayAnimationParams should be called first by
++// the caller; this function itself just prefers trigger over clip if
++// (unexpectedly) both are set.
++func playAnimationWithControl(robot *vector.Vector, trigger, clip string, timeout time.Duration) error {
++	ctx, cancel := context.WithTimeout(context.Background(), timeout)
++	defer cancel()
++
++	stream, err := robot.Conn.BehaviorControl(ctx)
++	if err != nil {
++		return fmt.Errorf("opening behavior control stream: %w", err)
++	}
++
++	if err := stream.Send(&vectorpb.BehaviorControlRequest{
++		RequestType: &vectorpb.BehaviorControlRequest_ControlRequest{
++			ControlRequest: &vectorpb.ControlRequest{
++				Priority: vectorpb.ControlRequest_OVERRIDE_BEHAVIORS,
++			},
++		},
++	}); err != nil {
++		return fmt.Errorf("requesting behavior control: %w", err)
++	}
++
++	granted := make(chan error, 1)
++	go func() {
++		for {
++			resp, err := stream.Recv()
++			if err != nil {
++				granted <- err
++				return
++			}
++			if resp.GetControlGrantedResponse() != nil {
++				granted <- nil
++				return
++			}
++		}
++	}()
++
++	select {
++	case err := <-granted:
++		if err != nil {
++			return fmt.Errorf("waiting for control grant: %w", err)
++		}
++	case <-ctx.Done():
++		return fmt.Errorf("timed out waiting for behavior control grant")
++	}
++
++	var playErr error
++	switch {
++	case trigger != "":
++		_, playErr = robot.Conn.PlayAnimationTrigger(ctx, &vectorpb.PlayAnimationTriggerRequest{
++			AnimationTrigger: &vectorpb.AnimationTrigger{Name: trigger},
++			Loops:            1,
++		})
++	case clip != "":
++		_, playErr = robot.Conn.PlayAnimation(ctx, &vectorpb.PlayAnimationRequest{
++			Animation: &vectorpb.Animation{Name: clip},
++			Loops:     1,
++		})
++	default:
++		playErr = fmt.Errorf("no trigger or anim clip name given")
++	}
++
++	// Best-effort release regardless of whether play succeeded -- never
++	// leave wire-pod holding behavior control on an error.
++	if err := stream.Send(&vectorpb.BehaviorControlRequest{
++		RequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
++			ControlRelease: &vectorpb.ControlRelease{},
++		},
++	}); err != nil {
++		logger.Println("play_animation: failed to release behavior control cleanly: " + err.Error())
++	}
++	stream.CloseSend()
++
++	return playErr
++}
+diff --git a/chipper/pkg/wirepod/sdkapp/animation_test.go b/chipper/pkg/wirepod/sdkapp/animation_test.go
+new file mode 100644
+index 0000000..f1ff1fe
+--- /dev/null
++++ b/chipper/pkg/wirepod/sdkapp/animation_test.go
+@@ -0,0 +1,73 @@
++package sdkapp
++
++import (
++	"testing"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
++)
++
++func TestValidatePlayAnimationParams_BothEmpty(t *testing.T) {
++	if err := validatePlayAnimationParams("", ""); err == nil {
++		t.Fatalf("expected an error when neither trigger nor anim is given")
++	}
++}
++
++func TestValidatePlayAnimationParams_TriggerOnly(t *testing.T) {
++	if err := validatePlayAnimationParams("sleepy_trigger", ""); err != nil {
++		t.Fatalf("expected no error with a trigger given, got %v", err)
++	}
++}
++
++func TestValidatePlayAnimationParams_ClipOnly(t *testing.T) {
++	if err := validatePlayAnimationParams("", "anim_tired_01"); err != nil {
++		t.Fatalf("expected no error with a clip given, got %v", err)
++	}
++}
++
++func TestValidatePlayAnimationParams_BothGivenIsFine(t *testing.T) {
++	// Not an error at validation time -- playAnimationWithControl prefers
++	// trigger over clip if both happen to be set.
++	if err := validatePlayAnimationParams("sleepy_trigger", "anim_tired_01"); err != nil {
++		t.Fatalf("expected no error when both are given, got %v", err)
++	}
++}
++
++func TestAnimationTriggerNames_Extracts(t *testing.T) {
++	resp := &vectorpb.ListAnimationTriggersResponse{
++		AnimationTriggerNames: []*vectorpb.AnimationTrigger{
++			{Name: "GreetAfterLongTime"},
++			{Name: "SleepyTired"},
++			{Name: "FistBumpRequestOnce"},
++		},
++	}
++	got := animationTriggerNames(resp)
++	want := []string{"GreetAfterLongTime", "SleepyTired", "FistBumpRequestOnce"}
++	if len(got) != len(want) {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++	for i := range want {
++		if got[i] != want[i] {
++			t.Fatalf("got %v, want %v", got, want)
++		}
++	}
++}
++
++func TestAnimationTriggerNames_EmptyResponse(t *testing.T) {
++	resp := &vectorpb.ListAnimationTriggersResponse{}
++	got := animationTriggerNames(resp)
++	if len(got) != 0 {
++		t.Fatalf("expected no names from an empty response, got %v", got)
++	}
++}
++
++func TestAnimationTriggerNames_NilResponse(t *testing.T) {
++	// GetAnimationTriggerNames() on a nil *ListAnimationTriggersResponse is
++	// safe (generated protobuf getters nil-check their receiver) -- make
++	// sure our wrapper doesn't panic on it either, since a defensive caller
++	// might pass one through.
++	var resp *vectorpb.ListAnimationTriggersResponse
++	got := animationTriggerNames(resp)
++	if len(got) != 0 {
++		t.Fatalf("expected no names from a nil response, got %v", got)
++	}
++}
+diff --git a/chipper/pkg/wirepod/sdkapp/server.go b/chipper/pkg/wirepod/sdkapp/server.go
+index efd6520..af16ed7 100755
+--- a/chipper/pkg/wirepod/sdkapp/server.go
++++ b/chipper/pkg/wirepod/sdkapp/server.go
+@@ -521,25 +521,69 @@ func SdkapiHandler(w http.ResponseWriter, r *http.Request) {
+ 		fmt.Fprint(w, "done")
+ 		return
+ 	case r.URL.Path == "/api-sdk/trigger_wake_word":
+-		robotIP := strings.Split(robotObj.Target, ":")[0]
+-		consoleURL := fmt.Sprintf("http://%s:8889/consolevarset?key=FakeButtonPressType&value=singlePressDetected", robotIP)
+-		
+-		client := &http.Client{
+-			Timeout: 10 * time.Second,
+-		}
+-		
+-		resp, err := client.Get(consoleURL)
+-		if err != nil {
++		// Fixed 2026-09-26e (Hermes): this used to simulate a button press
++		// via an HTTP GET to the robot's debug console webserver on port
++		// 8889 (FakeButtonPressType). That port is CLOSED on production
++		// escape-pod firmware -- confirmed by TCP connect failures/curl
++		// timeouts against the owner's real robot, which is why conversation
++		// mode's auto-listen (and curious-Vector's calls to this same
++		// endpoint) never actually worked. AppIntent("knowledge_question")
++		// over the already-connected gRPC channel (443) is the mechanism
++		// production firmware actually accepts -- it's the exact call stock
++		// wire-pod uses for {{newVoiceRequest||now}} (see DoNewRequest in
++		// pkg/wirepod/ttr/kgsim_cmds.go). Same URL/contract for callers
++		// (GET, "success" body on 200, error body + 500 otherwise) -- only
++		// the underlying mechanism changed, so curious-Vector needs no
++		// changes on its side.
++		if _, err := robot.Conn.AppIntent(ctx, &vectorpb.AppIntentRequest{Intent: "knowledge_question"}); err != nil {
+ 			http.Error(w, "Failed to trigger wake word: "+err.Error(), http.StatusInternalServerError)
+ 			return
+ 		}
+-		defer resp.Body.Close()
+-		
+-		if resp.StatusCode != http.StatusOK {
+-			http.Error(w, "Consolevars returned error", resp.StatusCode)
++		fmt.Fprint(w, "success")
++		return
++	case r.URL.Path == "/api-sdk/list_anim_triggers":
++		// Added 2026-09-26e (Hermes) for the day-cycle scheduler, whose
++		// separate Python SDK connection gets UNAUTHENTICATED 401 against
++		// the robot directly -- it needs a pod-side endpoint instead. Lists
++		// the animation TRIGGER names (not raw clip names) Vector knows, so
++		// callers can pick a real sleepy/yawn/etc. trigger. See
++		// animation.go for the pure name-extraction helper this wraps.
++		listCtx, cancel := context.WithTimeout(context.Background(), animationRPCTimeout)
++		defer cancel()
++		resp, err := robot.Conn.ListAnimationTriggers(listCtx, &vectorpb.ListAnimationTriggersRequest{})
++		if err != nil {
++			http.Error(w, "Failed to list animation triggers: "+err.Error(), http.StatusInternalServerError)
++			return
++		}
++		names := animationTriggerNames(resp)
++		jsonBytes, err := json.Marshal(names)
++		if err != nil {
++			http.Error(w, "Failed to encode animation trigger list: "+err.Error(), http.StatusInternalServerError)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		w.Write(jsonBytes)
++		return
++	case r.URL.Path == "/api-sdk/play_animation":
++		// Added 2026-09-26e (Hermes) for the day-cycle scheduler (its own
++		// Python SDK connection gets UNAUTHENTICATED 401, see above) --
++		// plays an animation via wire-pod's own robot connection instead.
++		// ?trigger=<AnimTriggerName> plays a trigger (the robot resolves it
++		// to a contextual clip); ?anim=<clip> plays an exact named
++		// animation clip, same call shape as DoPlayAnimation/DoPlayAnimationWI
++		// in pkg/wirepod/ttr/kgsim_cmds.go use for the LLM's
++		// {{playAnimationWI||...}} path. Takes behavior control briefly,
++		// plays, releases -- bounded to animationRPCTimeout (10s).
++		trigger := r.FormValue("trigger")
++		clip := r.FormValue("anim")
++		if err := validatePlayAnimationParams(trigger, clip); err != nil {
++			http.Error(w, err.Error(), http.StatusBadRequest)
++			return
++		}
++		if err := playAnimationWithControl(robot, trigger, clip, animationRPCTimeout); err != nil {
++			http.Error(w, "Failed to play animation: "+err.Error(), http.StatusInternalServerError)
+ 			return
+ 		}
+-		
+ 		fmt.Fprint(w, "success")
+ 		return
+ 	}
+diff --git a/chipper/pkg/wirepod/speechrequest/speechrequest.go b/chipper/pkg/wirepod/speechrequest/speechrequest.go
+index c808b40..346f237 100755
+--- a/chipper/pkg/wirepod/speechrequest/speechrequest.go
++++ b/chipper/pkg/wirepod/speechrequest/speechrequest.go
+@@ -12,6 +12,7 @@ import (
+ 	pb "github.com/digital-dream-labs/api/go/chipperpb"
+ 	"github.com/digital-dream-labs/opus-go/opus"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/vtt"
+ 	"github.com/maxhawkins/go-webrtcvad"
+ )
+@@ -36,10 +37,16 @@ type SpeechRequest struct {
+ 	PrevLenRaw      int
+ 	InactiveFrames  int
+ 	ActiveFrames    int
+-	VADInst         *webrtcvad.VAD
+-	LastAudioChunk  []byte
+-	IsOpus          bool
+-	OpusStream      *opus.OggStream
++	// TotalFrames added 2026-09-27 (Hermes) for the "he is cutting me off"
++	// fix -- counts every 10ms VAD frame processed since the request
++	// started (active or not), used to enforce a minimum total-audio
++	// duration before end-of-speech is allowed to trigger at all. See
++	// DetectEndOfSpeech.
++	TotalFrames    int
++	VADInst        *webrtcvad.VAD
++	LastAudioChunk []byte
++	IsOpus         bool
++	OpusStream     *opus.OggStream
+ }
+ 
+ func BytesToSamples(buf []byte) []int16 {
+@@ -105,10 +112,74 @@ func BytesToIntVAD(stream opus.OggStream, data []byte, die bool, isOpus bool) []
+ 	}
+ }
+ 
++// vadFrameMs is the duration of one webrtcvad frame as fed by SplitVAD
++// (320 bytes = 160 16-bit samples at 16kHz = 10ms).
++const vadFrameMs = 10
++
++// Defaults for the 2026-09-27 (Hermes) "he is cutting me off" fix: the owner
++// paused briefly after "ask hermes" and the OLD 230ms trailing-silence
++// threshold (23 frames) cut the stream before he finished speaking.
++// DefaultEndOfSpeechSilenceMs raises that to ~1.1s, and
++// DefaultMinTotalAudioMs adds a floor so end-of-speech can never trigger
++// before ~1.5s of total audio (active + inactive) has been seen at all,
++// regardless of how the silence/activity is distributed.
++const (
++	// DefaultEndOfSpeechSilenceMs reverted 2026-09-28 (Hermes) back to
++	// 1100ms. History: round 4 (live-6) shipped 1100ms and ran reliably in
++	// production (aside from occasional EOF races, which is a SEPARATE,
++	// now-fixed problem -- see streamend.go/Vosk.go's STT). Round 5
++	// (live-7) lowered this to 800ms as a speculative extra safety margin
++	// -- that value was NEVER validated in production before live-7 broke
++	// ALL speech recognition (every request: EOF/DeadlineExceeded/Canceled,
++	// zero successful transcriptions). A real end-to-end harness
++	// (pkg/wirepod/stt/vosk/Vosk_e2e_test.go) built to hunt this down does
++	// NOT reproduce the failure against either value -- the actual root
++	// cause was not conclusively identified in the source. Given that,
++	// 1100ms is the conservative choice: it's the one value with actual
++	// production track record. The EOF-finalize fix (the real structural
++	// improvement) works independently of this exact number either way.
++	DefaultEndOfSpeechSilenceMs = 1100
++	DefaultMinTotalAudioMs      = 1500
++)
++
++// minActiveFramesForEnd is unchanged from the original (18 frames = 180ms
++// of actual speech) -- kept as a floor so a stray noise burst followed by
++// silence can't trigger end-of-speech on its own; the NEW MinTotalAudioMs
++// gate is a separate, additional floor on total elapsed time.
++const minActiveFramesForEnd = 18
++
++// endOfSpeechSilenceFrames resolves the configured trailing-silence
++// threshold (falls back to DefaultEndOfSpeechSilenceMs if unset/invalid).
++func endOfSpeechSilenceFrames() int {
++	ms := vars.APIConfig.STT.EndOfSpeechSilenceMs
++	if ms <= 0 {
++		ms = DefaultEndOfSpeechSilenceMs
++	}
++	return ms / vadFrameMs
++}
++
++// minTotalAudioFrames resolves the configured minimum-total-audio floor
++// (falls back to DefaultMinTotalAudioMs if unset/invalid).
++func minTotalAudioFrames() int {
++	ms := vars.APIConfig.STT.MinTotalAudioMs
++	if ms <= 0 {
++		ms = DefaultMinTotalAudioMs
++	}
++	return ms / vadFrameMs
++}
++
++// endOfSpeechReached is the pure gating decision behind DetectEndOfSpeech,
++// split out 2026-09-27 (Hermes) so it's unit-testable without a real VAD/
++// audio pipeline. All units are VAD frames (10ms each).
++func endOfSpeechReached(inactiveFrames, activeFrames, totalFrames, silenceFrames, minTotalFrames int) bool {
++	return inactiveFrames >= silenceFrames && activeFrames > minActiveFramesForEnd && totalFrames >= minTotalFrames
++}
++
+ // Uses VAD to detect when the user stops speaking
+ func (req *SpeechRequest) DetectEndOfSpeech() (bool, bool) {
+-	// changes InactiveFrames and ActiveFrames in req
+-	inactiveNumMax := 23
++	// changes InactiveFrames, ActiveFrames and TotalFrames in req
++	silenceFrames := endOfSpeechSilenceFrames()
++	minTotalFrames := minTotalAudioFrames()
+ 	for _, chunk := range SplitVAD(req.LastAudioChunk) {
+ 		active, err := req.VADInst.Process(16000, chunk)
+ 		if err != nil {
+@@ -116,13 +187,14 @@ func (req *SpeechRequest) DetectEndOfSpeech() (bool, bool) {
+ 			logger.Println(err)
+ 			return true, false
+ 		}
++		req.TotalFrames = req.TotalFrames + 1
+ 		if active {
+ 			req.ActiveFrames = req.ActiveFrames + 1
+ 			req.InactiveFrames = 0
+ 		} else {
+ 			req.InactiveFrames = req.InactiveFrames + 1
+ 		}
+-		if req.InactiveFrames >= inactiveNumMax && req.ActiveFrames > 18 {
++		if endOfSpeechReached(req.InactiveFrames, req.ActiveFrames, req.TotalFrames, silenceFrames, minTotalFrames) {
+ 			logger.Println("(Bot " + req.Device + ") End of speech detected.")
+ 			return true, true
+ 		}
+diff --git a/chipper/pkg/wirepod/speechrequest/speechrequest_test.go b/chipper/pkg/wirepod/speechrequest/speechrequest_test.go
+new file mode 100644
+index 0000000..dd60763
+--- /dev/null
++++ b/chipper/pkg/wirepod/speechrequest/speechrequest_test.go
+@@ -0,0 +1,81 @@
++package speechrequest
++
++import "testing"
++
++// --- endOfSpeechReached: pure VAD gating logic, 2026-09-27 "he is cutting
++// me off" fix. All units are 10ms VAD frames. ---
++
++func TestEndOfSpeechReached_OldAggressiveThresholdNoLongerTriggersAlone(t *testing.T) {
++	// The OLD behavior: 23 inactive frames (230ms) + >18 active frames was
++	// enough to end the stream. With the new minTotalFrames floor
++	// (150 frames = 1.5s default), that alone must NOT be enough if total
++	// elapsed audio is still short.
++	inactiveFrames := 23
++	activeFrames := 19
++	totalFrames := 45 // 450ms total -- well under the new 1.5s floor
++	silenceFrames := endOfSpeechSilenceFrames() // resolves to the new default (110 frames / 1.1s)
++	minTotal := minTotalAudioFrames()           // resolves to the new default (150 frames / 1.5s)
++
++	if endOfSpeechReached(inactiveFrames, activeFrames, totalFrames, silenceFrames, minTotal) {
++		t.Fatalf("expected the old aggressive case to NOT end speech under the new thresholds")
++	}
++}
++
++func TestEndOfSpeechReached_RequiresFullSilenceWindow(t *testing.T) {
++	silenceFrames := 110 // 1.1s
++	minTotal := 150      // 1.5s
++	activeFrames := 50
++	totalFrames := 200 // total is fine
++
++	if endOfSpeechReached(109, activeFrames, totalFrames, silenceFrames, minTotal) {
++		t.Fatalf("expected 1090ms of silence (109 frames) to NOT be enough when the threshold is 110")
++	}
++	if !endOfSpeechReached(110, activeFrames, totalFrames, silenceFrames, minTotal) {
++		t.Fatalf("expected exactly 110 frames (1.1s) of silence to be enough")
++	}
++}
++
++func TestEndOfSpeechReached_RequiresMinTotalAudio(t *testing.T) {
++	silenceFrames := 110
++	minTotal := 150 // 1.5s
++	inactiveFrames := 110
++	activeFrames := 50
++
++	if endOfSpeechReached(inactiveFrames, activeFrames, 149, silenceFrames, minTotal) {
++		t.Fatalf("expected 1490ms total (149 frames) to NOT be enough when the floor is 150")
++	}
++	if !endOfSpeechReached(inactiveFrames, activeFrames, 150, silenceFrames, minTotal) {
++		t.Fatalf("expected exactly 150 frames (1.5s) total to be enough")
++	}
++}
++
++func TestEndOfSpeechReached_RequiresMinActiveFrames(t *testing.T) {
++	// Unchanged floor: >18 active frames (matches the original behavior),
++	// so a long silence with almost no real speech still doesn't trigger.
++	silenceFrames := 110
++	minTotal := 150
++	if endOfSpeechReached(200, 10, 300, silenceFrames, minTotal) {
++		t.Fatalf("expected too few active frames to NOT trigger end of speech")
++	}
++	if !endOfSpeechReached(200, 19, 300, silenceFrames, minTotal) {
++		t.Fatalf("expected 19 active frames (just above the 18 floor) to be sufficient")
++	}
++}
++
++// --- config resolution: 0/unset falls back to the new defaults ---
++
++func TestEndOfSpeechSilenceFrames_DefaultsWhenUnset(t *testing.T) {
++	got := endOfSpeechSilenceFrames()
++	want := DefaultEndOfSpeechSilenceMs / vadFrameMs
++	if got != want {
++		t.Fatalf("got %d frames, want %d (default %dms / %dms per frame)", got, want, DefaultEndOfSpeechSilenceMs, vadFrameMs)
++	}
++}
++
++func TestMinTotalAudioFrames_DefaultsWhenUnset(t *testing.T) {
++	got := minTotalAudioFrames()
++	want := DefaultMinTotalAudioMs / vadFrameMs
++	if got != want {
++		t.Fatalf("got %d frames, want %d (default %dms / %dms per frame)", got, want, DefaultMinTotalAudioMs, vadFrameMs)
++	}
++}
+diff --git a/chipper/pkg/wirepod/speechrequest/streamend.go b/chipper/pkg/wirepod/speechrequest/streamend.go
+new file mode 100644
+index 0000000..255bffe
+--- /dev/null
++++ b/chipper/pkg/wirepod/speechrequest/streamend.go
+@@ -0,0 +1,29 @@
++package speechrequest
++
++// streamend.go -- added 2026-09-27. Fixes a regression from the more
++// lenient end-of-speech VAD (2026-09-27 "he is cutting me off" fix): the
++// robot's OWN stream (its own end-of-utterance detection or a stream
++// deadline) can now close BEFORE our ~1.1s-silence VAD decides, which
++// GetNextStreamChunk surfaces as io.EOF. STT backends used to treat ANY
++// stream error as a hard failure and discard whatever audio had already
++// been accepted -- evidence: 2 of 5 recent voice requests logged
++// "(Bot ..., Vosk) Processing... / Using general recognizer / EOF /
++// Intent Sent: intent_system_noaudio", dropping real speech.
++//
++// ShouldFinalizeOnStreamEnd is the pure decision (no I/O, no recognizer)
++// behind the fix, used by pkg/wirepod/stt/vosk/Vosk.go's STT: when the
++// stream ends, finalize with whatever was already accepted instead of
++// erroring out, as long as SOME audio was accepted. Only a stream error
++// with zero audio ever accepted is still treated as a real error --
++// "only send noaudio if the final transcript is truly empty" is enforced
++// naturally downstream (preqs/intent.go et al already check
++// strings.TrimSpace(transcribedText) == "") once this returns a real
++// (possibly empty) transcript instead of an error.
++import "io"
++
++// ShouldFinalizeOnStreamEnd reports whether a stream-read error should be
++// treated as "the robot ended the stream, finalize what we have" rather
++// than a hard failure.
++func ShouldFinalizeOnStreamEnd(streamErr error, framesAccepted int) bool {
++	return streamErr == io.EOF && framesAccepted > 0
++}
+diff --git a/chipper/pkg/wirepod/speechrequest/streamend_test.go b/chipper/pkg/wirepod/speechrequest/streamend_test.go
+new file mode 100644
+index 0000000..39aaad2
+--- /dev/null
++++ b/chipper/pkg/wirepod/speechrequest/streamend_test.go
+@@ -0,0 +1,30 @@
++package speechrequest
++
++import (
++	"errors"
++	"io"
++	"testing"
++)
++
++func TestShouldFinalizeOnStreamEnd_EOFWithAudio(t *testing.T) {
++	// The exact regression: robot closes the stream (EOF) before our VAD
++	// decides, but we already accepted real audio -- must finalize, not error.
++	if !ShouldFinalizeOnStreamEnd(io.EOF, 3) {
++		t.Fatalf("expected EOF with accepted audio to finalize instead of erroring")
++	}
++}
++
++func TestShouldFinalizeOnStreamEnd_EOFWithNoAudio(t *testing.T) {
++	// Never got a single frame -- genuinely nothing to finalize, still an error.
++	if ShouldFinalizeOnStreamEnd(io.EOF, 0) {
++		t.Fatalf("expected EOF with zero accepted audio to still be treated as an error")
++	}
++}
++
++func TestShouldFinalizeOnStreamEnd_OtherErrorNeverFinalizes(t *testing.T) {
++	// A real transport error (not a clean stream-end) should still be a
++	// hard error even if some audio came in first.
++	if ShouldFinalizeOnStreamEnd(errors.New("connection reset"), 5) {
++		t.Fatalf("expected a non-EOF error to still be treated as an error")
++	}
++}
+diff --git a/chipper/pkg/wirepod/stt/vosk/Vosk.go b/chipper/pkg/wirepod/stt/vosk/Vosk.go
+index 286c320..ca5c1ba 100755
+--- a/chipper/pkg/wirepod/stt/vosk/Vosk.go
++++ b/chipper/pkg/wirepod/stt/vosk/Vosk.go
+@@ -196,15 +196,36 @@ func STT(req sr.SpeechRequest) (string, error) {
+ 	rec, recind := getRec(withGrm)
+ 	rec.SetWords(1)
+ 	rec.AcceptWaveform(req.FirstReq)
++	framesAccepted := 0
++	if len(req.FirstReq) > 0 {
++		framesAccepted++
++	}
+ 	req.DetectEndOfSpeech()
+ 	for {
+ 		chunk, err := req.GetNextStreamChunk()
+ 		if err != nil {
++			// Fixed 2026-09-27 (Hermes): the robot can close its end of the
++			// stream (its own end-of-utterance detection or a stream
++			// deadline) BEFORE our (now more lenient, ~1.1s) VAD decides
++			// end-of-speech -- this used to be treated as a hard error,
++			// discarding whatever audio had already been accepted (2 of 5
++			// recent requests logged this exact EOF -> intent_system_noaudio
++			// drop). See ShouldFinalizeOnStreamEnd in
++			// pkg/wirepod/speechrequest/streamend.go: finalize with what we
++			// have instead of erroring, as long as some audio was accepted.
++			// A truly empty result still falls through to noaudio downstream
++			// (preqs/intent.go's existing empty-transcript check) -- this
++			// only stops throwing away real speech.
++			if sr.ShouldFinalizeOnStreamEnd(err, framesAccepted) {
++				logger.Println("(Bot " + req.Device + ", Vosk) Stream ended before end-of-speech decided -- finalizing with audio already accepted instead of dropping it")
++				break
++			}
+ 			return "", err
+ 		}
+ 		speechIsDone, doProcess := req.DetectEndOfSpeech()
+ 		if doProcess {
+ 			rec.AcceptWaveform(chunk)
++			framesAccepted++
+ 		}
+ 		if speechIsDone {
+ 			break
+@@ -217,7 +238,7 @@ func STT(req sr.SpeechRequest) (string, error) {
+ 	} else {
+ 		gpRecs[recind].InUse = false
+ 	}
+-	transcribedText := jres["text"].(string)
++	transcribedText, _ := jres["text"].(string)
+ 	logger.Println("Bot " + req.Device + " Transcribed text: " + transcribedText)
+ 	return transcribedText, nil
+ }
+diff --git a/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go b/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
+new file mode 100644
+index 0000000..6f1737d
+--- /dev/null
++++ b/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
+@@ -0,0 +1,241 @@
++package wirepod_vosk
++
++// Vosk_e2e_test.go -- added 2026-09-28 (Hermes) after the live-7 regression
++// (ALL speech recognition broke: every request logged
++// "(Bot ..., Vosk) Processing... / Using general recognizer" then
++// "rpc error: DeadlineExceeded"/"Canceled", zero "Transcribed text" lines).
++//
++// This is a REAL end-to-end harness: it loads the actual Vosk model (same
++// path production uses, via vars.VoskModelPath -- must be run with the real
++// model data available, e.g. the ~/vector-pod/data/vosk volume
++// mounted), feeds a real recorded PCM utterance
++// (chipper/stttest.pcm -- the same file Vosk.go's own runTest() self-test
++// already uses on every startup, 16kHz/16-bit/mono, ~6s, known-good) through
++// a fake gRPC stream implementing the SAME interface GetNextStreamChunk
++// type-switches on, and calls the real STT() end to end. Two cases:
++//   - normal: the whole file streams through, VAD should decide
++//     end-of-speech partway through the trailing silence and return before
++//     the file is exhausted.
++//   - eofMidSpeech: the fake stream returns io.EOF partway through (before
++//     VAD would have decided on its own), simulating the robot closing its
++//     end of the stream early -- the regression scenario.
++// Both must return a non-empty transcript within a bounded deadline. A
++// deadline exceeded here (STT() genuinely hanging/never returning) is
++// exactly the class of bug being hunted.
++//
++// Skips itself (does not fail) if the real model isn't available, so it's
++// safe to leave in the tree for normal (non-cgo, non-model) CI runs.
++
++import (
++	"context"
++	"errors"
++	"io"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	pb "github.com/digital-dream-labs/api/go/chipperpb"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++	sr "github.com/kercre123/wire-pod/chipper/pkg/wirepod/speechrequest"
++	"github.com/maxhawkins/go-webrtcvad"
++	"google.golang.org/grpc"
++	"google.golang.org/grpc/metadata"
++)
++
++// fakeIntentStream implements pb.ChipperGrpc_StreamingIntentServer by
++// replaying pre-chunked audio, then returning a configurable terminal error
++// (io.EOF to simulate a clean stream end, or something else to simulate a
++// real transport error).
++type fakeIntentStream struct {
++	grpc.ServerStream
++	chunks    [][]byte
++	i         int
++	afterErr  error
++}
++
++func (f *fakeIntentStream) Send(*pb.IntentResponse) error { return nil }
++
++func (f *fakeIntentStream) Recv() (*pb.StreamingIntentRequest, error) {
++	if f.i >= len(f.chunks) {
++		if f.afterErr == nil {
++			return nil, io.EOF
++		}
++		return nil, f.afterErr
++	}
++	c := f.chunks[f.i]
++	f.i++
++	return &pb.StreamingIntentRequest{
++		Session:    "e2e-test",
++		DeviceId:   "e2e-test-esn",
++		InputAudio: c,
++	}, nil
++}
++
++func (f *fakeIntentStream) Context() context.Context           { return context.Background() }
++func (f *fakeIntentStream) SetHeader(metadata.MD) error        { return nil }
++func (f *fakeIntentStream) SendHeader(metadata.MD) error       { return nil }
++func (f *fakeIntentStream) SetTrailer(metadata.MD)             {}
++func (f *fakeIntentStream) SendMsg(m interface{}) error        { return nil }
++func (f *fakeIntentStream) RecvMsg(m interface{}) error        { return nil }
++
++// chunkPCM splits raw PCM into 3200-byte (100ms @ 16kHz/16-bit/mono) pieces,
++// matching the robot's documented chunk size (chipperpb.proto: "16k SR,
++// 1-channel, 100ms chunks").
++func chunkPCM(pcm []byte) [][]byte {
++	const chunkSize = 3200
++	var out [][]byte
++	for len(pcm) > 0 {
++		n := chunkSize
++		if n > len(pcm) {
++			n = len(pcm)
++		}
++		out = append(out, pcm[:n])
++		pcm = pcm[n:]
++	}
++	return out
++}
++
++// e2eModelAvailable reports whether the real Vosk model this test needs is
++// present, and initializes it (mirrors Vosk.go's Init(), scoped to what the
++// test needs) if so.
++func e2eSetup(t *testing.T) {
++	t.Helper()
++	if p := os.Getenv("E2E_VOSK_MODEL_PATH"); p != "" {
++		vars.VoskModelPath = p
++	}
++	modelPath := filepath.Join(vars.VoskModelPath, "en-US", "model")
++	if _, err := os.Stat(modelPath); err != nil {
++		t.Skipf("skipping: real Vosk model not available at %s (%v) -- run with the model data mounted to exercise this harness", modelPath, err)
++	}
++	if !modelLoaded {
++		vars.APIConfig.PastInitialSetup = true
++		vars.APIConfig.STT.Language = "en-US"
++		if err := Init(); err != nil {
++			t.Fatalf("Init() failed: %v", err)
++		}
++	}
++}
++
++func e2eLoadTestPCM(t *testing.T) []byte {
++	t.Helper()
++	// Same file Vosk.go's own runTest() self-test uses -- known-good,
++	// already proven to transcribe correctly on every pod startup.
++	candidates := []string{"../../../../stttest.pcm", "./stttest.pcm", "../../../../../stttest.pcm"}
++	for _, c := range candidates {
++		if b, err := os.ReadFile(c); err == nil {
++			return b
++		}
++	}
++	t.Skip("skipping: stttest.pcm not found relative to test working directory")
++	return nil
++}
++
++func newSpeechRequest(t *testing.T, stream pb.ChipperGrpc_StreamingIntentServer, firstReq []byte) sr.SpeechRequest {
++	t.Helper()
++	vadInst, err := webrtcvad.New()
++	if err != nil {
++		t.Fatalf("webrtcvad.New() failed: %v", err)
++	}
++	vadInst.SetMode(2)
++	return sr.SpeechRequest{
++		Device:   "e2e-test-esn",
++		Session:  "e2e-test",
++		FirstReq: firstReq,
++		Stream:   stream,
++		IsOpus:   false,
++		VADInst:  vadInst,
++	}
++}
++
++// runSTTWithDeadline calls STT() in a goroutine and fails the test if it
++// doesn't return within deadline -- this is what catches a genuine
++// hang/never-returns bug, as opposed to a fast (possibly wrong) error.
++func runSTTWithDeadline(t *testing.T, req sr.SpeechRequest, deadline time.Duration) (string, error) {
++	t.Helper()
++	type result struct {
++		text string
++		err  error
++	}
++	done := make(chan result, 1)
++	go func() {
++		text, err := STT(req)
++		done <- result{text, err}
++	}()
++	select {
++	case r := <-done:
++		return r.text, r.err
++	case <-time.After(deadline):
++		t.Fatalf("STT() did not return within %s -- this is the hang/never-returns failure mode", deadline)
++		return "", nil
++	}
++}
++
++func TestE2E_NormalEndOfSpeech_ProducesTranscript(t *testing.T) {
++	e2eSetup(t)
++	pcm := e2eLoadTestPCM(t)
++	chunks := chunkPCM(pcm)
++	first, rest := chunks[0], chunks[1:]
++	stream := &fakeIntentStream{chunks: rest} // EOF after all real audio -- VAD should decide before that
++	req := newSpeechRequest(t, stream, first)
++
++	text, err := runSTTWithDeadline(t, req, 15*time.Second)
++	if err != nil {
++		t.Fatalf("STT() returned an error for a normal utterance: %v", err)
++	}
++	if text == "" {
++		t.Fatalf("expected a non-empty transcript for a known-good recorded utterance")
++	}
++	t.Logf("normal case transcript: %q", text)
++}
++
++func TestE2E_EOFMidSpeech_StillProducesTranscript(t *testing.T) {
++	// The live-7 regression scenario: the stream ends (EOF) BEFORE our VAD
++	// would have decided end-of-speech on its own -- simulated by cutting
++	// the chunk feed short (only the first third of the recording), so the
++	// silence tail (which is what would normally trigger end-of-speech)
++	// never arrives -- the fake stream returns EOF instead.
++	e2eSetup(t)
++	pcm := e2eLoadTestPCM(t)
++	chunks := chunkPCM(pcm)
++	first := chunks[0]
++	cut := len(chunks) / 3
++	if cut < 1 {
++		cut = 1
++	}
++	rest := chunks[1:cut]
++	stream := &fakeIntentStream{chunks: rest, afterErr: io.EOF}
++	req := newSpeechRequest(t, stream, first)
++
++	text, err := runSTTWithDeadline(t, req, 15*time.Second)
++	if err != nil {
++		t.Fatalf("STT() returned an error on EOF-mid-speech instead of finalizing: %v", err)
++	}
++	// Partial audio may or may not yield a full transcript depending on
++	// where the cut lands, but it must return (not hang) and must not
++	// error -- that's the actual regression being guarded against here.
++	t.Logf("EOF-mid-speech transcript: %q", text)
++}
++
++func TestE2E_GenuineTransportError_StillReturnsPromptly(t *testing.T) {
++	// A non-EOF error (e.g. DeadlineExceeded/Canceled, matching the live-7
++	// symptom) with SOME audio already accepted must still return promptly
++	// (as an error) -- not hang.
++	e2eSetup(t)
++	pcm := e2eLoadTestPCM(t)
++	chunks := chunkPCM(pcm)
++	first := chunks[0]
++	cut := len(chunks) / 3
++	if cut < 1 {
++		cut = 1
++	}
++	rest := chunks[1:cut]
++	stream := &fakeIntentStream{chunks: rest, afterErr: errors.New("rpc error: code = DeadlineExceeded desc = context deadline exceeded")}
++	req := newSpeechRequest(t, stream, first)
++
++	_, err := runSTTWithDeadline(t, req, 15*time.Second)
++	if err == nil {
++		t.Fatalf("expected a genuine (non-EOF) transport error to still be returned as an error")
++	}
++	t.Logf("genuine transport error case returned promptly: %v", err)
++}
+diff --git a/chipper/pkg/wirepod/ttr/askhermes_test.go b/chipper/pkg/wirepod/ttr/askhermes_test.go
+new file mode 100644
+index 0000000..4354f0a
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/askhermes_test.go
+@@ -0,0 +1,74 @@
++package wirepod_ttr
++
++import (
++	"testing"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// --- extractHermesQuestion: the Go port of ask_hermes.py's TRIGGER_RE
++// stripping, WITHOUT the Python fallback-to-original-text bug. ---
++
++func TestExtractHermesQuestion_BareTriggerIsEmpty(t *testing.T) {
++	cases := []string{
++		"ask hermes",
++		"hey hermes",
++		"tell hermes",
++		"hermes",
++		"ask her me",
++		"hermies",
++	}
++	for _, c := range cases {
++		t.Run(c, func(t *testing.T) {
++			got := extractHermesQuestion(c)
++			if got != "" {
++				t.Fatalf("expected empty question for bare trigger %q, got %q", c, got)
++			}
++		})
++	}
++}
++
++func TestExtractHermesQuestion_RealQuestionIsExtracted(t *testing.T) {
++	cases := map[string]string{
++		"ask hermes what's the weather":       "what's the weather",
++		"hey hermes, what time is it":         "what time is it",
++		"tell hermes to remind me about taxes": "remind me about taxes",
++	}
++	for input, want := range cases {
++		t.Run(input, func(t *testing.T) {
++			got := extractHermesQuestion(input)
++			if got != want {
++				t.Fatalf("got %q, want %q", got, want)
++			}
++		})
++	}
++}
++
++// --- customIntentHandler's ask_hermes branch uses this length check ---
++
++func TestMinHermesQuestionLen_BoundaryBehavior(t *testing.T) {
++	// "hi" (2 chars) should be treated as too short; "yes" (3 chars) as
++	// long enough -- documents the exact boundary the fix uses.
++	if len("hi") >= minHermesQuestionLen {
++		t.Fatalf("expected 2-char input to be below minHermesQuestionLen (%d)", minHermesQuestionLen)
++	}
++	if len("yes") < minHermesQuestionLen {
++		t.Fatalf("expected 3-char input to meet minHermesQuestionLen (%d)", minHermesQuestionLen)
++	}
++}
++
++// --- runAskHermesWithQuestion: not-configured fallback (safe to test --
++// never reaches exec.Command since intent_ask_hermes isn't found) ---
++
++func TestRunAskHermesWithQuestion_NotConfigured(t *testing.T) {
++	orig := vars.CustomIntents
++	vars.CustomIntents = []vars.CustomIntent{
++		{Name: "some_other_custom_intent"},
++	}
++	t.Cleanup(func() { vars.CustomIntents = orig })
++
++	got := runAskHermesWithQuestion(nil, "test-esn-hermes-not-configured", "what's the weather")
++	if got {
++		t.Fatalf("expected false when intent_ask_hermes isn't configured")
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/backup_turnaround_test.go b/chipper/pkg/wirepod/ttr/backup_turnaround_test.go
+new file mode 100644
+index 0000000..54dac60
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/backup_turnaround_test.go
+@@ -0,0 +1,121 @@
++package wirepod_ttr
++
++import (
++	"testing"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// backupTurnaroundIntents mirrors the real chipper/intent-data/en-US.json
++// entries this test cares about, copied verbatim as of the 2026-09-28
++// bare-"back"/bare-"around" misfire fix (see
++// intent-data/en-US.json.bak-20260928-eof for the pre-change version).
++// Bug report: "go back to it ... you were doing good" matched
++// intent_imperative_backup on the bare "back" keyphrase and reversed the
++// robot instead of letting the LLM answer. "look around the room" matched
++// intent_imperative_turnaround on the bare "around" keyphrase and spun the
++// robot. Fix: require explicit phrasing for both.
++func backupTurnaroundIntents() []vars.JsonIntent {
++	return []vars.JsonIntent{
++		{
++			Name:       "intent_imperative_backup",
++			Keyphrases: []string{"back up", "backup", "backwards", "go backwards", "reverse", "move back", "beck"},
++		},
++		{
++			Name:       "intent_imperative_turnaround",
++			Keyphrases: []string{"turn around", "one eighty", "one ate he"},
++		},
++		{
++			Name:       "intent_system_charger",
++			Keyphrases: []string{"charge", "home", "go to your", "church", "find your ch", "charger"},
++		},
++	}
++}
++
++// TestFindIntentMatch_BackupMisfires_NoLongerMatch is the exact 2026-09-28
++// regression case plus the coordinator's other named phrases: none of
++// these should match intent_imperative_backup any more now that the bare
++// "back" keyphrase is gone. With no CORE match, these fall through to the
++// LLM (Found=false or a different intent), which is the desired outcome.
++func TestFindIntentMatch_BackupMisfires_NoLongerMatch(t *testing.T) {
++	phrases := []string{
++		"go back to it you were doing good",
++		"i'm back",
++		"im back",
++		"come back",
++		"back to the charger",
++	}
++	for _, phrase := range phrases {
++		t.Run(phrase, func(t *testing.T) {
++			res := findIntentMatch(phrase, backupTurnaroundIntents(), true)
++			if res.Found && res.IntentName == "intent_imperative_backup" {
++				t.Fatalf("expected %q to NOT match intent_imperative_backup, but it did (keyphrase %q)", phrase, res.Keyphrase)
++			}
++		})
++	}
++}
++
++// TestFindIntentMatch_BackupExplicitPhrases_StillMatch confirms the
++// explicit backup phrasings the coordinator asked for still work as CORE
++// matches.
++func TestFindIntentMatch_BackupExplicitPhrases_StillMatch(t *testing.T) {
++	phrases := []string{
++		"back up",
++		"backup",
++		"backwards",
++		"go backwards",
++		"reverse",
++		"move back",
++	}
++	for _, phrase := range phrases {
++		t.Run(phrase, func(t *testing.T) {
++			res := findIntentMatch(phrase, backupTurnaroundIntents(), true)
++			if !res.Found {
++				t.Fatalf("expected %q to match a CORE intent, got no match", phrase)
++			}
++			if res.IntentName != "intent_imperative_backup" {
++				t.Fatalf("expected %q to match intent_imperative_backup, got %q", phrase, res.IntentName)
++			}
++		})
++	}
++}
++
++// TestFindIntentMatch_TurnaroundMisfire_NoLongerMatches is the
++// "look around the room" case from the bug report: this should NOT spin
++// the robot now that bare "around" is gone.
++func TestFindIntentMatch_TurnaroundMisfire_NoLongerMatches(t *testing.T) {
++	phrases := []string{
++		"look around the room",
++		"look around",
++		"what's around here",
++	}
++	for _, phrase := range phrases {
++		t.Run(phrase, func(t *testing.T) {
++			res := findIntentMatch(phrase, backupTurnaroundIntents(), true)
++			if res.Found && res.IntentName == "intent_imperative_turnaround" {
++				t.Fatalf("expected %q to NOT match intent_imperative_turnaround, but it did (keyphrase %q)", phrase, res.Keyphrase)
++			}
++		})
++	}
++}
++
++// TestFindIntentMatch_TurnAround_StillMatches confirms the explicit
++// "turn around" phrasing (and the numeric variants) still work.
++func TestFindIntentMatch_TurnAround_StillMatches(t *testing.T) {
++	phrases := []string{
++		"turn around",
++		"can you turn around",
++		"one eighty",
++	}
++	for _, phrase := range phrases {
++		t.Run(phrase, func(t *testing.T) {
++			res := findIntentMatch(phrase, backupTurnaroundIntents(), true)
++			if !res.Found {
++				t.Fatalf("expected %q to match a CORE intent, got no match", phrase)
++			}
++			if res.IntentName != "intent_imperative_turnaround" {
++				t.Fatalf("expected %q to match intent_imperative_turnaround, got %q", phrase, res.IntentName)
++			}
++		})
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/bcontrol.go b/chipper/pkg/wirepod/ttr/bcontrol.go
+index a5ef94a..21b59dc 100644
+--- a/chipper/pkg/wirepod/ttr/bcontrol.go
++++ b/chipper/pkg/wirepod/ttr/bcontrol.go
+@@ -3,12 +3,85 @@ package wirepod_ttr
+ import (
+ 	"context"
+ 	"log"
++	"sync"
++	"time"
+ 
+ 	"github.com/fforchino/vector-go-sdk/pkg/vector"
+ 	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
+ )
+ 
++// Behavior-control safety net, 2026-09-27 (Hermes). History:
++//   - First cut: a flat 30s deadline, after the owner's robot froze
++//     (buttons/movement stopped) when its Wi-Fi dropped mid-reply while
++//     wire-pod held OVERRIDE_BEHAVIORS and the normal release (the `stop`
++//     channel, sent once the response pipeline finishes) never arrived.
++//   - Found immediately after: the flat 30s ALSO fired during a legitimate
++//     reply -- a getImage turn (intro line -> capture -> ~6s vision model
++//     -> spoken answer) routinely exceeds 30s. Replaced with an adaptive
++//     watchdog: the deadline resets on every sign of real progress
++//     (TouchBehaviorControlActivity, called from PerformActions -- covers
++//     speech, animations, doIntent, everything it dispatches), with a
++//     30s+ absolute cap as the true "definitely stuck" ceiling. The
++//     original flat-30s freeze fix's actual safety property (control can
++//     never be held forever) is preserved by the absolute cap; the
++//     regression it caused is fixed by resetting on progress.
++const (
++	behaviorControlInactivityTimeout = 20 * time.Second // no progress for this long -> force-release
++	behaviorControlAbsoluteCap       = 90 * time.Second  // hard ceiling regardless of activity
++	behaviorControlWatchdogInterval  = 1 * time.Second   // how often the watchdog re-checks
++)
++
++// releaseBehaviorControlRetries/releaseBehaviorControlRetryDelay: how many
++// times (and how far apart) to retry sending ControlRelease if the first
++// attempt fails -- covers the same "robot briefly unreachable" case that
++// motivated this whole safety net, so a transient failure right at
++// release time doesn't leave control stuck forever either.
++const releaseBehaviorControlRetries = 3
++const releaseBehaviorControlRetryDelay = 2 * time.Second
++
++// behaviorControlActivity tracks, per ESN, the last time
++// TouchBehaviorControlActivity was called -- the inactivity watchdog reads
++// this to decide whether to force-release. Package-level (like
++// conversation.go's/pendingintent.go's per-ESN maps) since BControl only
++// has the robot connection, not a natural place to thread a channel through
++// every caller that might make progress.
++var (
++	behaviorControlActivity   = map[string]time.Time{}
++	behaviorControlActivityMu sync.Mutex
++)
++
++// TouchBehaviorControlActivity records that esn's held behavior control is
++// making real progress right now (a sentence was spoken, an animation
++// played, an action fired, ...), resetting the inactivity watchdog. Safe
++// to call even when no BControl watchdog is currently running for esn.
++func TouchBehaviorControlActivity(esn string) {
++	behaviorControlActivityMu.Lock()
++	defer behaviorControlActivityMu.Unlock()
++	behaviorControlActivity[esn] = time.Now()
++}
++
++func getBehaviorControlActivity(esn string) time.Time {
++	behaviorControlActivityMu.Lock()
++	defer behaviorControlActivityMu.Unlock()
++	return behaviorControlActivity[esn]
++}
++
++// behaviorControlShouldRelease is the pure watchdog decision, split out so
++// it's unit-testable without a real robot connection or timers: given how
++// long control has been held in total and how long since the last
++// progress touch, should the watchdog force a release? Returns the reason
++// string for logging when true.
++func behaviorControlShouldRelease(heldFor, sinceLastActivity, inactivityTimeout, absoluteCap time.Duration) (bool, string) {
++	if heldFor >= absoluteCap {
++		return true, "absolute cap"
++	}
++	if sinceLastActivity >= inactivityTimeout {
++		return true, "inactivity watchdog"
++	}
++	return false, ""
++}
++
+ func sayText(robot *vector.Vector, text string) {
+ 	controlRequest := &vectorpb.BehaviorControlRequest{
+ 		RequestType: &vectorpb.BehaviorControlRequest_ControlRequest{
+@@ -117,23 +190,65 @@ func BControl(robot *vector.Vector, ctx context.Context, start, stop chan bool)
+ 			}
+ 		}
+ 
+-		for {
+-			select {
+-			case <-stop:
+-				logger.Println("KGSim: releasing behavior control (interrupt)")
+-				if err := r.Send(
++		// releaseControl retries a few times (2026-09-27, Hermes) since a
++		// send failing right at release time is the same class of
++		// transient robot-unreachable condition this whole safety net is
++		// for -- don't give up on the first failure.
++		releaseControl := func(reason string) {
++			logger.Println("KGSim: releasing behavior control (" + reason + ")")
++			for attempt := 1; attempt <= releaseBehaviorControlRetries; attempt++ {
++				sendErr := r.Send(
+ 					&vectorpb.BehaviorControlRequest{
+ 						RequestType: &vectorpb.BehaviorControlRequest_ControlRelease{
+ 							ControlRelease: &vectorpb.ControlRelease{},
+ 						},
+ 					},
+-				); err != nil {
+-					logger.Println(err)
++				)
++				if sendErr == nil {
+ 					return
+ 				}
++				logger.Println("BControl: release attempt failed (" + sendErr.Error() + ")")
++				if attempt < releaseBehaviorControlRetries {
++					time.Sleep(releaseBehaviorControlRetryDelay)
++				}
++			}
++			logger.Println("BControl: giving up on releasing behavior control after retries")
++		}
++
++		// Fixed 2026-09-27 (Hermes): this used to be a busy-spin
++		// `for { select { case <-stop: ...; default: continue } }` with NO
++		// deadline -- if `stop` never arrived (e.g. the response pipeline
++		// got stuck upstream because the robot's Wi-Fi dropped mid-reply),
++		// control was held FOREVER and the robot's own buttons/movement
++		// stayed frozen (OVERRIDE_BEHAVIORS blocks the robot's normal
++		// behavior stack). Now a proper blocking select with an adaptive
++		// watchdog: force-release only after behaviorControlInactivityTimeout
++		// with no progress, or behaviorControlAbsoluteCap regardless --
++		// resets on every TouchBehaviorControlActivity call (see
++		// PerformActions in kgsim_cmds.go), so a long-but-progressing reply
++		// (e.g. a getImage turn: intro -> capture -> ~6s vision model ->
++		// answer) isn't cut off the way a flat 30s deadline was.
++		esn := robot.Cfg.SerialNo
++		TouchBehaviorControlActivity(esn)
++		heldSince := time.Now()
++		ticker := time.NewTicker(behaviorControlWatchdogInterval)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-stop:
++				releaseControl("interrupt")
+ 				return
+-			default:
+-				continue
++			case <-ticker.C:
++				shouldRelease, reason := behaviorControlShouldRelease(
++					time.Since(heldSince),
++					time.Since(getBehaviorControlActivity(esn)),
++					behaviorControlInactivityTimeout,
++					behaviorControlAbsoluteCap,
++				)
++				if shouldRelease {
++					releaseControl(reason)
++					return
++				}
+ 			}
+ 		}
+ 		// * end - modified from official vector-go-sdk
+diff --git a/chipper/pkg/wirepod/ttr/bcontrol_test.go b/chipper/pkg/wirepod/ttr/bcontrol_test.go
+new file mode 100644
+index 0000000..57bc846
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/bcontrol_test.go
+@@ -0,0 +1,67 @@
++package wirepod_ttr
++
++import (
++	"testing"
++	"time"
++)
++
++// --- behaviorControlShouldRelease: the adaptive watchdog decision,
++// 2026-09-27, replacing the flat 30s deadline that cut off a legitimate
++// ~35s+ getImage (vision) reply. ---
++
++func TestBehaviorControlShouldRelease_ActiveReplyIsNotCutOff(t *testing.T) {
++	// The exact regression: a getImage turn easily exceeds 30s (intro ->
++	// capture -> ~6s vision model -> answer) but keeps making progress the
++	// whole time -- must NOT be released just because total hold time
++	// passed the old flat 30s mark, as long as activity is recent.
++	should, _ := behaviorControlShouldRelease(45*time.Second, 2*time.Second, 20*time.Second, 90*time.Second)
++	if should {
++		t.Fatalf("expected an actively-progressing 45s-held reply to NOT be released")
++	}
++}
++
++func TestBehaviorControlShouldRelease_InactivityTriggersRelease(t *testing.T) {
++	should, reason := behaviorControlShouldRelease(25*time.Second, 21*time.Second, 20*time.Second, 90*time.Second)
++	if !should || reason != "inactivity watchdog" {
++		t.Fatalf("expected inactivity watchdog to release, got should=%v reason=%q", should, reason)
++	}
++}
++
++func TestBehaviorControlShouldRelease_JustUnderInactivityIsFine(t *testing.T) {
++	should, _ := behaviorControlShouldRelease(25*time.Second, 19999*time.Millisecond, 20*time.Second, 90*time.Second)
++	if should {
++		t.Fatalf("expected just-under-inactivity-timeout to still be fine")
++	}
++}
++
++func TestBehaviorControlShouldRelease_AbsoluteCapAlwaysWins(t *testing.T) {
++	// Even with activity 1ms ago, the absolute cap is a hard ceiling --
++	// this is what keeps the original freeze-safety-net property (control
++	// can never be held forever) even for a pathological case that somehow
++	// keeps "touching" activity indefinitely.
++	should, reason := behaviorControlShouldRelease(90*time.Second, 1*time.Millisecond, 20*time.Second, 90*time.Second)
++	if !should || reason != "absolute cap" {
++		t.Fatalf("expected the absolute cap to release regardless of recent activity, got should=%v reason=%q", should, reason)
++	}
++}
++
++func TestBehaviorControlShouldRelease_JustUnderAbsoluteCapIsFine(t *testing.T) {
++	should, _ := behaviorControlShouldRelease(89999*time.Millisecond, 1*time.Millisecond, 20*time.Second, 90*time.Second)
++	if should {
++		t.Fatalf("expected just-under-the-absolute-cap to still be fine")
++	}
++}
++
++// --- TouchBehaviorControlActivity / getBehaviorControlActivity ---
++
++func TestTouchBehaviorControlActivity_UpdatesTimestamp(t *testing.T) {
++	esn := "test-esn-bcontrol-touch"
++	before := getBehaviorControlActivity(esn) // zero value if never touched
++
++	TouchBehaviorControlActivity(esn)
++	after := getBehaviorControlActivity(esn)
++
++	if !after.After(before) {
++		t.Fatalf("expected TouchBehaviorControlActivity to advance the recorded timestamp, before=%v after=%v", before, after)
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/conversation.go b/chipper/pkg/wirepod/ttr/conversation.go
+new file mode 100644
+index 0000000..cbcada1
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/conversation.go
+@@ -0,0 +1,257 @@
++package wirepod_ttr
++
++// conversation.go -- "conversation mode" for Vector, added 2026-09-26d
++// (Hermes, owner-approved). Goal: after wire-pod's LLM path finishes
++// speaking a reply and releases behavior control, the robot re-opens its
++// mic for a follow-up (same as if it heard "Hey Vector") so the owner doesn't
++// have to repeat the wake word for every turn of a conversation.
++//
++// Design constraints (see the brief this was built from):
++//   - Fully config-gated: Knowledge.ConversationMode (bool) and
++//     Knowledge.ConversationTimeoutSec (int, seconds).
++//   - Fail-safe: any error triggering the follow-up listen (flaky Wi-Fi,
++//     robot unreachable) is logged and the conversation is dropped
++//     silently -- never retried, never panics.
++//   - Ends the conversation (does not re-listen) when: the next utterance
++//     is silence/noaudio; a CORE intent was matched; the conversation has
++//     been running longer than the timeout since the last user speech; or
++//     a safety cap of consecutive auto-listens is hit.
++//   - Does not re-listen when the LLM reply itself contained a
++//     {{doIntent||...}} command, or when the LLM already asked for a
++//     follow-up itself via the existing (stock wire-pod) {{newVoiceRequest||now}}
++//     command -- that command already triggers a new voice request via
++//     AppIntent (see DoNewRequest in kgsim_cmds.go), so auto-triggering on
++//     top of it would double-open the mic.
++//
++// Fixed 2026-09-26e (Hermes): the original trigger simulated a button press
++// via an HTTP GET to the robot's debug console webserver on port 8889 (the
++// same mechanism /api-sdk/trigger_wake_word used). That port is CLOSED on
++// production escape-pod firmware -- confirmed by TCP connect failures/curl
++// timeouts against the owner's real robot -- so the trigger never fired.
++// Auto-listen now reuses the SAME mechanism stock wire-pod already uses for
++// {{newVoiceRequest||now}}: DoNewRequest's AppIntent("knowledge_question")
++// call over the robot's already-open gRPC connection (port 443), which
++// production firmware does accept. See DoNewRequest in kgsim_cmds.go.
++//
++// The state machine itself (decideConversationContinuation) is a pure
++// function with no I/O and no global state, so it's unit-testable directly.
++// Everything else in this file is the thin I/O layer around it (per-ESN
++// state storage, the RPC that actually re-opens the mic).
++
++import (
++	"fmt"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// DefaultConversationMaxListens is the safety cap on consecutive
++// auto-triggered listens within one conversation, so something like a TV
++// left on in the background can't keep the robot listening forever.
++const DefaultConversationMaxListens = 6
++
++// DefaultConversationTimeoutSec mirrors the fallback also applied in
++// vars.ReadConfig for configs written before this field existed.
++const DefaultConversationTimeoutSec = 12
++
++// conversationPostSpeechDelay is how long we wait after speech finishes
++// (and behavior control is released) before re-opening the mic, so the
++// robot's own speaker output doesn't get picked back up by its mic.
++// DoNewRequest (below) adds its own additional ~333ms delay before the
++// actual AppIntent call, which is fine -- a little extra margin here is
++// harmless and only makes the "don't hear himself" guarantee stronger.
++const conversationPostSpeechDelay = 400 * time.Millisecond
++
++// ConversationState tracks the auto-listen conversation for one robot
++// (keyed by ESN). Zero value is the correct "no active conversation" state.
++type ConversationState struct {
++	ESN         string
++	Active      bool
++	ListenCount int
++}
++
++var (
++	conversationStates []ConversationState
++	conversationMu     sync.Mutex
++)
++
++// getConversationState returns the current state for esn, or a fresh
++// zero-value state if none is tracked yet.
++func getConversationState(esn string) ConversationState {
++	conversationMu.Lock()
++	defer conversationMu.Unlock()
++	for _, cs := range conversationStates {
++		if cs.ESN == esn {
++			return cs
++		}
++	}
++	return ConversationState{ESN: esn}
++}
++
++// placeConversationState upserts state for its ESN.
++func placeConversationState(cs ConversationState) {
++	conversationMu.Lock()
++	defer conversationMu.Unlock()
++	for i, existing := range conversationStates {
++		if existing.ESN == cs.ESN {
++			conversationStates[i] = cs
++			return
++		}
++	}
++	conversationStates = append(conversationStates, cs)
++}
++
++// EndConversation resets any tracked conversation state for esn. Call this
++// whenever something should stop the auto-listen chain: silence/noaudio,
++// a matched CORE intent, or the state machine itself deciding not to
++// continue (cap/timeout/disabled/doIntent/newVoiceRequest).
++func EndConversation(esn string) {
++	placeConversationState(ConversationState{ESN: esn})
++}
++
++// conversationDecisionInput bundles everything decideConversationContinuation
++// needs as plain values, so it never touches global config/state/network and
++// stays trivially unit-testable.
++type conversationDecisionInput struct {
++	ConversationModeEnabled bool
++	ReplyText               string
++	ListenCount             int
++	MaxListens              int
++	TimeSinceLastUserSpeech time.Duration
++	Timeout                 time.Duration
++}
++
++type conversationDecision struct {
++	ShouldListen bool
++	// Reason is a short machine-checkable tag for logging/tests:
++	// "disabled" | "doIntent" | "newVoiceRequest" | "cap" | "timeout" | "ok"
++	Reason string
++}
++
++// decideConversationContinuation is the pure state-machine decision: given
++// the current turn's inputs, should wire-pod re-open the mic for a
++// follow-up? See the file header for the full rule list.
++func decideConversationContinuation(in conversationDecisionInput) conversationDecision {
++	if !in.ConversationModeEnabled {
++		return conversationDecision{ShouldListen: false, Reason: "disabled"}
++	}
++	if strings.Contains(in.ReplyText, "{{doIntent") {
++		return conversationDecision{ShouldListen: false, Reason: "doIntent"}
++	}
++	if strings.Contains(in.ReplyText, "{{newVoiceRequest") {
++		// The LLM already asked for a follow-up itself via the stock
++		// wire-pod mechanism (AppIntent "knowledge_question", see
++		// DoNewRequest) -- don't also trigger our own, or the mic would
++		// open twice.
++		return conversationDecision{ShouldListen: false, Reason: "newVoiceRequest"}
++	}
++	if in.ListenCount >= in.MaxListens {
++		return conversationDecision{ShouldListen: false, Reason: "cap"}
++	}
++	if in.TimeSinceLastUserSpeech > in.Timeout {
++		return conversationDecision{ShouldListen: false, Reason: "timeout"}
++	}
++	return conversationDecision{ShouldListen: true, Reason: "ok"}
++}
++
++// conversationTimeout resolves the configured timeout, falling back to the
++// default if unset (defensive -- vars.ReadConfig already normalizes this on
++// load, this is a second fail-safe for callers/tests that build config in
++// memory without going through ReadConfig).
++func conversationTimeout() time.Duration {
++	secs := vars.APIConfig.Knowledge.ConversationTimeoutSec
++	if secs <= 0 {
++		secs = DefaultConversationTimeoutSec
++	}
++	return time.Duration(secs) * time.Second
++}
++
++// connectRobotByESN mirrors the connection pattern already used in
++// StreamingKGSim/KGSim: look up the robot's GUID+IP in vars.BotInfo.Robots
++// by ESN and open a fresh SDK connection. Kept ESN-driven (rather than
++// threading the *vector.Vector the caller already has through
++// MaybeContinueConversation) so the trigger stays self-contained and
++// callable from anywhere that only has an ESN -- and so a stale/closed
++// connection from the just-finished response can't take the follow-up
++// trigger down with it.
++func connectRobotByESN(esn string) (*vector.Vector, error) {
++	for _, bot := range vars.BotInfo.Robots {
++		if bot.Esn == esn {
++			return vector.New(vector.WithSerialNo(esn), vector.WithToken(bot.GUID), vector.WithTarget(bot.IPAddress+":443"))
++		}
++	}
++	return nil, fmt.Errorf("no robot registered for ESN %s", esn)
++}
++
++// triggerFollowUpListenFn is a package-level indirection so tests can stub
++// out the actual robot RPC. Production code should never reassign this
++// outside of tests.
++var triggerFollowUpListenFn = TriggerFollowUpListen
++
++// TriggerFollowUpListen re-opens the robot's mic for a follow-up using the
++// SAME mechanism stock wire-pod already uses for {{newVoiceRequest||now}}
++// (see DoNewRequest in kgsim_cmds.go): AppIntent("knowledge_question") over
++// the robot's gRPC connection (port 443). This is what production
++// escape-pod firmware actually accepts -- see the 2026-09-26e fix note in
++// the file header for why the earlier HTTP/port-8889 approach didn't work.
++func TriggerFollowUpListen(esn string) error {
++	robot, err := connectRobotByESN(esn)
++	if err != nil {
++		return err
++	}
++	return DoNewRequest(robot)
++}
++
++// MaybeContinueConversation is called once an LLM reply has finished
++// speaking and behavior control has been released (see the end of
++// StreamingKGSim in kgsim.go). It decides -- via decideConversationContinuation
++// -- whether to re-open the robot's mic for a follow-up, and if so, does it.
++//
++// lastUserSpeechAt should be the timestamp the current turn's user utterance
++// was received (captured at the top of StreamingKGSim), NOT the time this
++// function is called -- that's what lets the timeout rule catch a
++// pathologically slow LLM/TTS round trip eating into the conversation
++// window.
++//
++// Fails safe: any error is logged and the conversation state is reset
++// (dropped silently), never retried.
++func MaybeContinueConversation(esn, replyText string, lastUserSpeechAt time.Time) {
++	cs := getConversationState(esn)
++
++	decision := decideConversationContinuation(conversationDecisionInput{
++		ConversationModeEnabled: vars.APIConfig.Knowledge.ConversationMode,
++		ReplyText:               replyText,
++		ListenCount:             cs.ListenCount,
++		MaxListens:              DefaultConversationMaxListens,
++		TimeSinceLastUserSpeech: time.Since(lastUserSpeechAt),
++		Timeout:                 conversationTimeout(),
++	})
++
++	if !decision.ShouldListen {
++		if decision.Reason != "disabled" {
++			logger.Println("Conversation mode: not continuing for " + esn + " (reason: " + decision.Reason + ")")
++		}
++		EndConversation(esn)
++		return
++	}
++
++	// Give the robot's own speech a moment to finish leaving the speaker
++	// before we open the mic back up, so he doesn't hear himself.
++	time.Sleep(conversationPostSpeechDelay)
++
++	if err := triggerFollowUpListenFn(esn); err != nil {
++		logger.Println("Conversation mode: failed to trigger follow-up listen for " + esn + ": " + err.Error())
++		EndConversation(esn)
++		return
++	}
++
++	cs.ESN = esn
++	cs.Active = true
++	cs.ListenCount++
++	placeConversationState(cs)
++	logger.Println(fmt.Sprintf("Conversation mode: auto-listen triggered for %s (turn %d/%d)", esn, cs.ListenCount, DefaultConversationMaxListens))
++}
+diff --git a/chipper/pkg/wirepod/ttr/conversation_test.go b/chipper/pkg/wirepod/ttr/conversation_test.go
+new file mode 100644
+index 0000000..944754f
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/conversation_test.go
+@@ -0,0 +1,276 @@
++package wirepod_ttr
++
++import (
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// --- decideConversationContinuation: the pure state-machine tests ---
++
++func baseDecisionInput() conversationDecisionInput {
++	return conversationDecisionInput{
++		ConversationModeEnabled: true,
++		ReplyText:               "Sure, here's the weather today.",
++		ListenCount:             0,
++		MaxListens:              DefaultConversationMaxListens,
++		TimeSinceLastUserSpeech: 2 * time.Second,
++		Timeout:                 12 * time.Second,
++	}
++}
++
++func TestDecideConversationContinuation_OK(t *testing.T) {
++	d := decideConversationContinuation(baseDecisionInput())
++	if !d.ShouldListen || d.Reason != "ok" {
++		t.Fatalf("expected ShouldListen=true, reason=ok, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_Disabled(t *testing.T) {
++	in := baseDecisionInput()
++	in.ConversationModeEnabled = false
++	d := decideConversationContinuation(in)
++	if d.ShouldListen || d.Reason != "disabled" {
++		t.Fatalf("expected disabled, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_DoIntentSuppresses(t *testing.T) {
++	in := baseDecisionInput()
++	in.ReplyText = "Sure! {{doIntent||intent_explore_start}} Off I go."
++	d := decideConversationContinuation(in)
++	if d.ShouldListen || d.Reason != "doIntent" {
++		t.Fatalf("expected doIntent to suppress auto-listen, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_NewVoiceRequestSuppresses(t *testing.T) {
++	// The LLM already asked for a follow-up itself via the stock
++	// {{newVoiceRequest||now}} command (see kgsim_cmds.go DoNewRequest) --
++	// our own auto-listen must not ALSO fire, or the mic opens twice.
++	in := baseDecisionInput()
++	in.ReplyText = "Anything else? {{newVoiceRequest||now}}"
++	d := decideConversationContinuation(in)
++	if d.ShouldListen || d.Reason != "newVoiceRequest" {
++		t.Fatalf("expected newVoiceRequest to suppress auto-listen, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_CapEndsIt(t *testing.T) {
++	in := baseDecisionInput()
++	in.ListenCount = DefaultConversationMaxListens // already at the cap
++	d := decideConversationContinuation(in)
++	if d.ShouldListen || d.Reason != "cap" {
++		t.Fatalf("expected cap to end the conversation, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_CapAllowsOneBelowLimit(t *testing.T) {
++	in := baseDecisionInput()
++	in.ListenCount = DefaultConversationMaxListens - 1
++	d := decideConversationContinuation(in)
++	if !d.ShouldListen {
++		t.Fatalf("expected one below the cap to still be allowed, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_TimeoutEndsIt(t *testing.T) {
++	in := baseDecisionInput()
++	in.TimeSinceLastUserSpeech = 13 * time.Second
++	in.Timeout = 12 * time.Second
++	d := decideConversationContinuation(in)
++	if d.ShouldListen || d.Reason != "timeout" {
++		t.Fatalf("expected timeout to end the conversation, got %+v", d)
++	}
++}
++
++func TestDecideConversationContinuation_JustUnderTimeoutIsOK(t *testing.T) {
++	in := baseDecisionInput()
++	in.TimeSinceLastUserSpeech = 11999 * time.Millisecond
++	in.Timeout = 12 * time.Second
++	d := decideConversationContinuation(in)
++	if !d.ShouldListen {
++		t.Fatalf("expected just-under-timeout to still continue, got %+v", d)
++	}
++}
++
++// --- EndConversation / state storage ---
++
++func TestEndConversation_ResetsActiveState(t *testing.T) {
++	esn := "test-esn-end-conv"
++	placeConversationState(ConversationState{ESN: esn, Active: true, ListenCount: 4})
++
++	// silence, a CORE intent match, or the state machine itself all call
++	// EndConversation the same way.
++	EndConversation(esn)
++
++	cs := getConversationState(esn)
++	if cs.Active || cs.ListenCount != 0 {
++		t.Fatalf("expected reset state after EndConversation, got %+v", cs)
++	}
++}
++
++func TestGetConversationState_UnknownESNIsZeroValue(t *testing.T) {
++	cs := getConversationState("never-seen-this-esn")
++	if cs.Active || cs.ListenCount != 0 {
++		t.Fatalf("expected zero-value state for unknown ESN, got %+v", cs)
++	}
++}
++
++// --- connectRobotByESN / TriggerFollowUpListen ---
++
++func TestConnectRobotByESN_NotRegistered(t *testing.T) {
++	// vars.BotInfo.Robots has nothing matching this ESN, so this must fail
++	// before ever attempting a network dial (vector.New is only reached
++	// after a match is found).
++	_, err := connectRobotByESN("esn-definitely-not-registered-anywhere")
++	if err == nil {
++		t.Fatalf("expected an error for an unregistered ESN")
++	}
++}
++
++// --- MaybeContinueConversation: the orchestration, with the RPC stubbed ---
++
++func withStubTrigger(t *testing.T, fn func(esn string) error) {
++	t.Helper()
++	orig := triggerFollowUpListenFn
++	triggerFollowUpListenFn = fn
++	t.Cleanup(func() { triggerFollowUpListenFn = orig })
++}
++
++func withConversationConfig(t *testing.T, enabled bool, timeoutSec int) {
++	t.Helper()
++	origEnabled := vars.APIConfig.Knowledge.ConversationMode
++	origTimeout := vars.APIConfig.Knowledge.ConversationTimeoutSec
++	vars.APIConfig.Knowledge.ConversationMode = enabled
++	vars.APIConfig.Knowledge.ConversationTimeoutSec = timeoutSec
++	t.Cleanup(func() {
++		vars.APIConfig.Knowledge.ConversationMode = origEnabled
++		vars.APIConfig.Knowledge.ConversationTimeoutSec = origTimeout
++	})
++}
++
++func TestMaybeContinueConversation_TriggersAndIncrementsListenCount(t *testing.T) {
++	withConversationConfig(t, true, 12)
++	called := 0
++	var gotESN string
++	withStubTrigger(t, func(esn string) error {
++		called++
++		gotESN = esn
++		return nil
++	})
++	esn := "test-esn-trigger-ok"
++	EndConversation(esn)
++
++	MaybeContinueConversation(esn, "Sure, here you go.", time.Now())
++
++	if called != 1 {
++		t.Fatalf("expected the trigger to fire exactly once, called=%d", called)
++	}
++	if gotESN != esn {
++		t.Fatalf("expected trigger to be called with esn=%q, got %q", esn, gotESN)
++	}
++	cs := getConversationState(esn)
++	if !cs.Active || cs.ListenCount != 1 {
++		t.Fatalf("expected Active=true, ListenCount=1, got %+v", cs)
++	}
++}
++
++func TestMaybeContinueConversation_TriggerErrorFailsSafe(t *testing.T) {
++	withConversationConfig(t, true, 12)
++	withStubTrigger(t, func(esn string) error {
++		return errors.New("connection refused (flaky wifi)")
++	})
++	esn := "test-esn-trigger-err"
++	placeConversationState(ConversationState{ESN: esn, Active: true, ListenCount: 2})
++
++	// Must not panic, and must drop the conversation rather than leaving
++	// stale "Active" state around.
++	MaybeContinueConversation(esn, "Sure, here you go.", time.Now())
++
++	cs := getConversationState(esn)
++	if cs.Active {
++		t.Fatalf("expected conversation to be dropped after a trigger error, got %+v", cs)
++	}
++}
++
++func TestMaybeContinueConversation_CapStopsAfterMaxListens(t *testing.T) {
++	withConversationConfig(t, true, 12)
++	called := 0
++	withStubTrigger(t, func(esn string) error {
++		called++
++		return nil
++	})
++	esn := "test-esn-cap"
++	EndConversation(esn)
++
++	for i := 0; i < DefaultConversationMaxListens+1; i++ {
++		MaybeContinueConversation(esn, "Sure, here you go.", time.Now())
++	}
++
++	if called != DefaultConversationMaxListens {
++		t.Fatalf("expected exactly %d triggers before the cap stops it, got %d", DefaultConversationMaxListens, called)
++	}
++	cs := getConversationState(esn)
++	if cs.Active {
++		t.Fatalf("expected conversation to end once the cap is hit, got %+v", cs)
++	}
++}
++
++func TestMaybeContinueConversation_DisabledNeverTriggers(t *testing.T) {
++	withConversationConfig(t, false, 12)
++	called := 0
++	withStubTrigger(t, func(esn string) error {
++		called++
++		return nil
++	})
++	esn := "test-esn-disabled"
++	EndConversation(esn)
++
++	MaybeContinueConversation(esn, "Sure, here you go.", time.Now())
++
++	if called != 0 {
++		t.Fatalf("expected no trigger when conversation_mode is disabled, called=%d", called)
++	}
++}
++
++func TestMaybeContinueConversation_TimeoutNeverTriggers(t *testing.T) {
++	withConversationConfig(t, true, 1) // 1s timeout
++	called := 0
++	withStubTrigger(t, func(esn string) error {
++		called++
++		return nil
++	})
++	esn := "test-esn-timeout"
++	EndConversation(esn)
++
++	oldSpeech := time.Now().Add(-5 * time.Second) // well past the 1s timeout
++	MaybeContinueConversation(esn, "Sure, here you go.", oldSpeech)
++
++	if called != 0 {
++		t.Fatalf("expected no trigger once the timeout has elapsed, called=%d", called)
++	}
++	cs := getConversationState(esn)
++	if cs.Active {
++		t.Fatalf("expected conversation to be ended by the timeout, got %+v", cs)
++	}
++}
++
++func TestMaybeContinueConversation_DoIntentNeverTriggers(t *testing.T) {
++	withConversationConfig(t, true, 12)
++	called := 0
++	withStubTrigger(t, func(esn string) error {
++		called++
++		return nil
++	})
++	esn := "test-esn-dointent"
++	EndConversation(esn)
++
++	MaybeContinueConversation(esn, "Sure! {{doIntent||intent_explore_start}}", time.Now())
++
++	if called != 0 {
++		t.Fatalf("expected no trigger when the reply used doIntent, called=%d", called)
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/intentkeyphrase_test.go b/chipper/pkg/wirepod/ttr/intentkeyphrase_test.go
+new file mode 100644
+index 0000000..889acc7
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/intentkeyphrase_test.go
+@@ -0,0 +1,82 @@
++package wirepod_ttr
++
++import (
++	"testing"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// commandIntents mirrors the real chipper/intent-data/en-US.json entries
++// this test cares about, copied verbatim as of the 2026-09-27 doIntent fix
++// (see intent-data/en-US.json.bak-20260927-doint for the pre-change
++// version) -- explore/dance/charger, the three families the 2026-09-27
++// bug report asked to check.
++func commandIntents() []vars.JsonIntent {
++	return []vars.JsonIntent{
++		{
++			Name:       "intent_explore_start",
++			Keyphrases: []string{"start", "plor", "owing", "tailoring", "oding", "oring", "pling", "start exploring", "explore mode", "explorer mode", "exploring mode", "go explore", "go exploring"},
++		},
++		{
++			Name:       "intent_system_charger",
++			Keyphrases: []string{"charge", "home", "go to your", "church", "find your ch", "charger"},
++		},
++		{
++			Name:       "intent_imperative_dance",
++			Keyphrases: []string{"dance", "dancing", "thence", "dance to the beat", "the beat", "boogie", "to the music"},
++		},
++	}
++}
++
++// TestFindIntentMatch_ExploreModeVariants_MatchCoreDirectly covers the
++// exact phrasings the 2026-09-27 bug report asked for: these must match
++// intent_explore_start as a CORE keyword match (Found=true), never fall
++// through to the LLM, regardless of llm_first.
++func TestFindIntentMatch_ExploreModeVariants_MatchCoreDirectly(t *testing.T) {
++	phrases := []string{
++		"explore mode",
++		"go and explore mode",
++		"explorer mode",
++		"exploring mode",
++		"go explore",
++		"go exploring",
++	}
++	for _, phrase := range phrases {
++		t.Run(phrase, func(t *testing.T) {
++			res := findIntentMatch(phrase, commandIntents(), true)
++			if !res.Found {
++				t.Fatalf("expected %q to match a CORE intent, got no match (FellBackFromSocial=%v)", phrase, res.FellBackFromSocial)
++			}
++			if res.IntentName != "intent_explore_start" {
++				t.Fatalf("expected %q to match intent_explore_start, got %q", phrase, res.IntentName)
++			}
++		})
++	}
++}
++
++// TestFindIntentMatch_DanceAndCharger_AlreadyMatchCoreDirectly is the
++// "sanity-check dance / go home / go to your charger" ask -- these already
++// matched before this round's change (via existing substring keyphrases),
++// confirmed here so a future edit can't silently regress them.
++func TestFindIntentMatch_DanceAndCharger_AlreadyMatchCoreDirectly(t *testing.T) {
++	cases := []struct {
++		phrase       string
++		wantIntent   string
++	}{
++		{"dance", "intent_imperative_dance"},
++		{"do a dance", "intent_imperative_dance"},
++		{"go home", "intent_system_charger"},
++		{"go to your charger", "intent_system_charger"},
++	}
++	for _, c := range cases {
++		t.Run(c.phrase, func(t *testing.T) {
++			res := findIntentMatch(c.phrase, commandIntents(), true)
++			if !res.Found {
++				t.Fatalf("expected %q to match a CORE intent, got no match", c.phrase)
++			}
++			if res.IntentName != c.wantIntent {
++				t.Fatalf("expected %q to match %s, got %q", c.phrase, c.wantIntent, res.IntentName)
++			}
++		})
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 585afa2..32a5762 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -190,6 +190,10 @@ func CreateAIReq(transcribedText, esn string, gpt3tryagain, isKG bool) openai.Ch
+ }
+ 
+ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bool) (string, error) {
++	// Captured at entry (not at speech-end) so the conversation-mode timeout
++	// check (see conversation.go) measures wall-clock time since the user
++	// actually spoke, including however long the LLM+TTS round trip takes.
++	lastUserSpeechAt := time.Now()
+ 	start := make(chan bool)
+ 	stop := make(chan bool)
+ 	stopStop := make(chan bool)
+@@ -299,35 +303,25 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 		for {
+ 			response, err := stream.Recv()
+ 			if errors.Is(err, io.EOF) {
+-				// prevents a crash
+-				if len(fullRespSlice) == 0 {
+-					logger.Println("LLM returned no response")
+-					successIntent <- false
+-					if isKG {
+-						kgStopLooping = true
+-						for range kgReadyToAnswer {
+-							break
+-						}
+-						stop <- true
+-						time.Sleep(time.Second / 3)
+-						KGSim(esn, "There was an error getting data from the L. L. M.")
+-					}
+-					break
++				// Fixed 2026-09-27 (Hermes): always flush any trailing text
++				// that never hit a punctuation-mark split, instead of the
++				// old fragile newStr/TrimPrefix reconciliation, which
++				// treated a reply with NO punctuation at all as "no
++				// response" and silently dropped it entirely (the robot
++				// showed the cloud-with-exclamation error with nothing
++				// spoken). See flushTrailingText/needsFallbackResponse in
++				// llmflush.go for the pure logic this wraps. Raw text is
++				// logged (truncated) unconditionally now, for diagnosing
++				// whatever the NEXT one of these turns out to be.
++				logger.Println("LLM raw response (truncated): " + truncateForLog(fullfullRespText, llmRawLogTruncateLen))
++				fullRespSlice = flushTrailingText(fullRespSlice, fullRespText)
++				fullRespText = ""
++				if needsFallbackResponse(fullRespSlice) {
++					logger.Println("LLM produced no speakable text and no action -- using fallback reply")
++					fullRespSlice = append(fullRespSlice, llmEmptyReplyFallback)
+ 				}
+ 				isDone = true
+-				// if fullRespSlice != fullRespText, add that missing bit to fullRespSlice
+-				newStr := fullRespSlice[0]
+-				for i, str := range fullRespSlice {
+-					if i == 0 {
+-						continue
+-					}
+-					newStr = newStr + " " + str
+-				}
+-				if strings.TrimSpace(newStr) != strings.TrimSpace(fullfullRespText) {
+-					logger.Println("LLM debug: there is content after the last punctuation mark")
+-					extraBit := strings.TrimPrefix(fullRespText, newStr)
+-					fullRespSlice = append(fullRespSlice, extraBit)
+-				}
++				joinedResp := strings.Join(fullRespSlice, " ")
+ 				if vars.APIConfig.Knowledge.SaveChat {
+ 					Remember(openai.ChatCompletionMessage{
+ 						Role:    openai.ChatMessageRoleUser,
+@@ -335,12 +329,27 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 					},
+ 						openai.ChatCompletionMessage{
+ 							Role:    openai.ChatMessageRoleAssistant,
+-							Content: newStr,
++							Content: joinedResp,
+ 						},
+ 						esn)
+ 				}
+-				logger.LogUI("LLM response for " + esn + ": " + newStr)
++				logger.LogUI("LLM response for " + esn + ": " + joinedResp)
+ 				logger.Println("LLM stream finished")
++				// Always signal success now -- fullRespSlice is guaranteed
++				// non-empty above (real content or the fallback), so the
++				// old "no response" failure path (successIntent <- false)
++				// is no longer reachable via this branch. Non-blocking:
++				// harmless no-op if a value was already sent mid-stream.
++				select {
++				case successIntent <- true:
++				default:
++				}
++				// Wake up an outer response loop that's already parked
++				// waiting for more content (see the "for range speakReady"
++				// wait below) -- closing (rather than a non-blocking send)
++				// guarantees it can't be missed by a timing race, since
++				// nothing sends to speakReady after this point.
++				close(speakReady)
+ 				return
+ 			}
+ 
+@@ -501,6 +510,22 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 		if !interrupted {
+ 			stopStop <- true
+ 			stop <- true
++			// Deferred doIntent (added 2026-09-27): behavior control has
++			// just been released above -- fire any {{doIntent||...}} this
++			// turn queued (see PerformActions' ActionDoIntent case in
++			// kgsim_cmds.go and pendingintent.go). Run async, same
++			// fail-safe reasoning as MaybeContinueConversation below: never
++			// block/hold this control loop, never hang on a flaky robot.
++			go FirePendingIntentAfterRelease(esn, robot)
++			// Conversation mode (added 2026-09-26d, Hermes; trigger mechanism
++			// fixed 2026-09-26e): speech is done and behavior control has
++			// just been released above -- decide whether to auto-trigger a
++			// follow-up listen. Run async so it never blocks/holds this
++			// (already fragile) control loop, and so an unreachable robot
++			// (flaky Wi-Fi) can't hang anything here. MaybeContinueConversation
++			// looks the robot back up by ESN itself (see connectRobotByESN
++			// in conversation.go), so only the ESN needs to be passed here.
++			go MaybeContinueConversation(esn, fullfullRespText, lastUserSpeechAt)
+ 		}
+ 	}
+ 	return "", nil
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_cmds.go b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+index 86241a7..f05d91d 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim_cmds.go
++++ b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+@@ -30,6 +30,8 @@ const (
+ 	ActionNewRequest = 4
+ 	// arg: sound file
+ 	ActionPlaySound = 4
++	// arg: whitelisted built-in intent name, e.g. intent_explore_start
++	ActionDoIntent = 5
+ )
+ 
+ var animationMap [][2]string = [][2]string{
+@@ -132,6 +134,13 @@ var ValidLLMCommands []LLMCommand = []LLMCommand{
+ 		Action:          ActionNewRequest,
+ 		SupportedModels: []string{"all"},
+ 	},
++	{
++		Command:         "doIntent",
++		Description:     "Triggers one specific built-in Vector robot action/behavior by its exact name. Use this when the user actually wants Vector to DO one of these real things (explore the room, go to its charger, tell the time, change volume, change eye color, take a photo, dance, do a trick, or move a specific way) - do not just talk about doing it, trigger it. You may say a short spoken line together with this command. NEVER invent a name that is not in the parameter choices - if nothing matches, do not use this command at all. Do NOT use this for greetings (hello/goodbye/good morning/good night) - always answer those with your own spoken words instead of this command.",
++		ParamChoices:    strings.Join(AllowedLLMIntents, ", "),
++		Action:          ActionDoIntent,
++		SupportedModels: []string{"all"},
++	},
+ 	// {
+ 	// 	Command:      "playSound",
+ 	// 	Description:  "Plays a sound on the robot.",
+@@ -140,6 +149,86 @@ var ValidLLMCommands []LLMCommand = []LLMCommand{
+ 	// },
+ }
+ 
++// AllowedLLMIntents is the explicit whitelist of built-in Vector intents the LLM
++// is permitted to trigger via {{doIntent||intent_name}}. Added 2026-09-26 by Hermes
++// (owner-approved LLM-first speech routing, see project_vector_companion_state.md).
++// intent_greeting_* is deliberately NOT on this list: greetings must go through the
++// LLM's own spoken response, never the stock canned greeting animation.
++var AllowedLLMIntents = []string{
++	"intent_explore_start",
++	"intent_system_charger",
++	"intent_system_sleep",
++	"intent_clock_time",
++	"intent_imperative_volumeup",
++	"intent_imperative_volumedown",
++	"intent_imperative_eyecolor",
++	"intent_photo_take_extend",
++	"intent_imperative_dance",
++	"intent_play_fistbump",
++	"intent_play_popawheelie",
++	"intent_imperative_forward",
++	"intent_imperative_backup",
++	"intent_imperative_turnleft",
++	"intent_imperative_turnright",
++	"intent_imperative_turnaround",
++	"intent_imperative_come",
++	"intent_imperative_lookatme",
++}
++
++// IsAllowedLLMIntent reports whether intentName is on the AllowedLLMIntents
++// whitelist (trimmed comparison). Split out from DoIntent 2026-09-27 so the
++// whitelist check itself is unit-testable without a robot connection.
++func IsAllowedLLMIntent(intentName string) bool {
++	intentName = strings.TrimSpace(intentName)
++	for _, allowed := range AllowedLLMIntents {
++		if intentName == allowed {
++			return true
++		}
++	}
++	return false
++}
++
++// DoIntent dispatches a built-in Vector intent chosen by the LLM, but only if it
++// is on AllowedLLMIntents - this is the runtime enforcement of the whitelist, on
++// top of the prompt only ever listing these same names as valid ParamChoices.
++//
++// NOT called from the main LLM response path anymore as of 2026-09-27 (see
++// PerformActions' ActionDoIntent case and pendingintent.go) -- firing
++// AppIntent here, in a goroutine, WHILE wire-pod still holds
++// OVERRIDE_BEHAVIORS to keep speaking the rest of the reply, caused the
++// robot's actual behavior to be dropped/overridden: "explore mode" got a
++// spoken confirmation but the robot never moved. Kept as a thin
++// fire-and-forget wrapper in case any other caller needs the old
++// immediate-fire behavior; the deferred path uses DoIntentNow instead,
++// which returns the RPC error rather than discarding it.
++func DoIntent(intentName string, robot *vector.Vector) error {
++	intentName = strings.TrimSpace(intentName)
++	if !IsAllowedLLMIntent(intentName) {
++		logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + intentName)
++		return nil
++	}
++	go func() {
++		time.Sleep(time.Second / 3)
++		robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: intentName})
++	}()
++	return nil
++}
++
++// DoIntentNow fires the AppIntent call synchronously and returns any RPC
++// error, so a caller (pendingintent.go's FirePendingIntentAfterRelease) can
++// fail safe / log it instead of silently dropping it. No internal delay --
++// callers that defer until after behavior control is released already add
++// their own margin (pendingIntentPostReleaseDelay).
++func DoIntentNow(intentName string, robot *vector.Vector) error {
++	intentName = strings.TrimSpace(intentName)
++	if !IsAllowedLLMIntent(intentName) {
++		logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + intentName)
++		return nil
++	}
++	_, err := robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: intentName})
++	return err
++}
++
+ func ModelIsSupported(cmd LLMCommand, model string) bool {
+ 	for _, str := range cmd.SupportedModels {
+ 		if str == "all" || str == model {
+@@ -613,9 +702,17 @@ func DoGetImage(msgs []openai.ChatCompletionMessage, param string, robot *vector
+ 	}
+ }
+ 
+-func DoNewRequest(robot *vector.Vector) {
++// DoNewRequest re-opens the robot's mic for a follow-up voice command via
++// AppIntent("knowledge_question") -- the same call the stock companion app
++// uses for its "ask a question" button. Used both by the LLM-driven
++// {{newVoiceRequest||now}} command below (fire-and-forget, error ignored,
++// as before) AND by conversation.go's deterministic auto-listen (added
++// 2026-09-26e, Hermes), which DOES check the returned error so it can fail
++// safe on a bad connection instead of silently doing nothing.
++func DoNewRequest(robot *vector.Vector) error {
+ 	time.Sleep(time.Second / 3)
+-	robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "knowledge_question"})
++	_, err := robot.Conn.AppIntent(context.Background(), &vectorpb.AppIntentRequest{Intent: "knowledge_question"})
++	return err
+ }
+ 
+ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction, robot *vector.Vector, stopStop chan bool) bool {
+@@ -630,6 +727,13 @@ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction,
+ 		if stopPerforming {
+ 			return false
+ 		}
++		// Adaptive behavior-control watchdog (2026-09-27, Hermes): every
++		// action this loop is about to perform counts as real progress --
++		// reset BControl's inactivity clock so a long-but-progressing reply
++		// (e.g. a getImage turn: intro -> capture -> ~6s vision model ->
++		// answer) doesn't get cut off by the watchdog the way a flat 30s
++		// deadline did.
++		TouchBehaviorControlActivity(robot.Cfg.SerialNo)
+ 		switch {
+ 		case action.Action == ActionSayText:
+ 			DoSayText(action.Parameter, robot)
+@@ -640,6 +744,23 @@ func PerformActions(msgs []openai.ChatCompletionMessage, actions []RobotAction,
+ 		case action.Action == ActionNewRequest:
+ 			go DoNewRequest(robot)
+ 			return true
++		case action.Action == ActionDoIntent:
++			// Fixed 2026-09-27: used to call DoIntent here, which fired
++			// AppIntent in a goroutine after a short delay WHILE this same
++			// response was still being spoken under OVERRIDE_BEHAVIORS --
++			// the robot's real behavior (e.g. explore) got dropped/
++			// overridden by the ongoing speech control. Now: queue the
++			// intent (per-ESN) and stop speaking immediately (return true,
++			// same as ActionNewRequest/ActionGetImage below) -- the intent
++			// fires from kgsim.go, once behavior control has actually been
++			// released for this turn (see FirePendingIntentAfterRelease in
++			// pendingintent.go). If the name isn't whitelisted, log and
++			// keep going as before (nothing to defer).
++			if IsAllowedLLMIntent(action.Parameter) {
++				RecordPendingIntent(robot.Cfg.SerialNo, action.Parameter)
++				return true
++			}
++			logger.Println("LLM tried to trigger a built-in intent that is not whitelisted: " + action.Parameter)
+ 		case action.Action == ActionGetImage:
+ 			DoGetImage(msgs, action.Parameter, robot, stopStop)
+ 			return true
+diff --git a/chipper/pkg/wirepod/ttr/llmflush.go b/chipper/pkg/wirepod/ttr/llmflush.go
+new file mode 100644
+index 0000000..7f8b02a
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/llmflush.go
+@@ -0,0 +1,95 @@
++package wirepod_ttr
++
++// llmflush.go -- added 2026-09-27. Fixes a bug where an LLM reply with no
++// terminal punctuation was silently dropped: StreamingKGSim only ever
++// moved streamed text out of the in-progress buffer (fullRespText) into
++// the speakable queue (fullRespSlice) when it saw ".", "?", "!" or "..."
++// go by. A reply that never contained one of those (a short reply made
++// MORE likely by the 2026-09-26e brevity instruction) left fullRespSlice
++// empty for the whole stream, which the old EOF handler treated as
++// len(fullRespSlice)==0 -> "LLM returned no response" -> the function
++// returned an error and nothing was ever spoken. Evidence (2026-09-27,
++// the owner): "asked from a family member face to status" -> pod logged
++// "LLM stream response:" (nothing printed), "Intent Sent:
++// intent_greeting_hello", "LLM debug: there is content after the last
++// punctuation mark", "LLM stream finished" -- and nothing was spoken; the
++// robot showed the cloud-with-exclamation error.
++//
++// The fix, split into pure/testable pieces:
++//   - flushTrailingText: always carries forward whatever's left in the
++//     not-yet-punctuation-split buffer as a final chunk, replacing the old
++//     fragile newStr/TrimPrefix reconciliation in the EOF handler (which
++//     only worked by accident for the single-trailing-fragment case and
++//     did nothing for a reply with NO punctuation at all).
++//   - needsFallbackResponse: decides whether, after flushing, there is
++//     genuinely nothing to say and no action (doIntent etc.) to perform --
++//     in which case a short spoken fallback should be used instead of
++//     silence, so the robot never errors out with nothing spoken.
++//
++// See kgsim.go's StreamingKGSim EOF handling for how these are wired in.
++
++import (
++	"strings"
++)
++
++// llmEmptyReplyFallback is spoken when the LLM's reply produces no
++// speakable text and no action, so the robot never silently errors out.
++const llmEmptyReplyFallback = "Hmm, say that again?"
++
++// llmRawLogTruncateLen bounds how much of the raw LLM text gets logged for
++// diagnosis (added 2026-09-27 per this bug's postmortem -- there was no
++// visibility into the actual raw text that triggered the silent-drop).
++const llmRawLogTruncateLen = 300
++
++// truncateForLog truncates s to at most max runes for logging, appending a
++// marker if it was cut. Rune-safe (doesn't split a multi-byte character).
++func truncateForLog(s string, max int) string {
++	r := []rune(s)
++	if len(r) <= max {
++		return s
++	}
++	return string(r[:max]) + "...(truncated)"
++}
++
++// flushTrailingText appends trailingText (the not-yet-punctuation-split
++// buffer, i.e. fullRespText at EOF) to flushedChunks (fullRespSlice as
++// accumulated mid-stream) if it has any non-whitespace content. Pure: does
++// not mutate its inputs, returns a new slice.
++//
++// This covers all three of the 2026-09-27 bug report's cases:
++//   - No punctuation ANYWHERE in the reply: flushedChunks is empty,
++//     trailingText is the ENTIRE reply -> becomes the sole chunk.
++//   - A sentence flushed mid-stream, then a trailing fragment with no
++//     closing punctuation: trailingText (just the fragment) is appended
++//     after the already-flushed chunk(s).
++//   - The reply ends exactly on a punctuation mark, nothing after:
++//     trailingText is empty -> flushedChunks is returned unchanged.
++func flushTrailingText(flushedChunks []string, trailingText string) []string {
++	if strings.TrimSpace(trailingText) == "" {
++		return flushedChunks
++	}
++	out := make([]string, 0, len(flushedChunks)+1)
++	out = append(out, flushedChunks...)
++	out = append(out, trailingText)
++	return out
++}
++
++// needsFallbackResponse reports whether, after parsing every chunk's
++// commands (via GetActionsFromString), nothing will actually be said or
++// done -- meaning a fallback phrase should be spoken instead of silence.
++// A single {{command}} with no surrounding text (e.g. a bare
++// {{doIntent||...}}) correctly reports false: an action WILL happen, no
++// fallback needed even though there's no spoken text.
++func needsFallbackResponse(chunks []string) bool {
++	for _, c := range chunks {
++		for _, a := range GetActionsFromString(c) {
++			if a.Action != ActionSayText {
++				return false
++			}
++			if strings.TrimSpace(a.Parameter) != "" {
++				return false
++			}
++		}
++	}
++	return true
++}
+diff --git a/chipper/pkg/wirepod/ttr/llmflush_test.go b/chipper/pkg/wirepod/ttr/llmflush_test.go
+new file mode 100644
+index 0000000..c4c5b74
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/llmflush_test.go
+@@ -0,0 +1,110 @@
++package wirepod_ttr
++
++import "testing"
++
++// --- flushTrailingText: the three 2026-09-27 bug report scenarios ---
++
++func TestFlushTrailingText_NoPunctuationAtAll(t *testing.T) {
++	// The exact failure mode: fullRespSlice never got anything mid-stream
++	// (no "." "?" "!" "..." ever seen), so the whole reply is sitting in
++	// the trailing buffer at EOF.
++	got := flushTrailingText(nil, "I think it's daytime right now")
++	want := []string{"I think it's daytime right now"}
++	if len(got) != 1 || got[0] != want[0] {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++}
++
++func TestFlushTrailingText_SentenceThenUnpunctuatedTrailer(t *testing.T) {
++	// A full sentence flushed mid-stream, then a trailing fragment with no
++	// closing punctuation.
++	got := flushTrailingText([]string{"Sure!"}, " and it looks sunny out")
++	want := []string{"Sure!", " and it looks sunny out"}
++	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++}
++
++func TestFlushTrailingText_OnlyACommand(t *testing.T) {
++	// A reply that's nothing but a bare {{command}} -- no punctuation, so
++	// it never got flushed mid-stream either.
++	got := flushTrailingText(nil, "{{doIntent||intent_explore_start}}")
++	want := []string{"{{doIntent||intent_explore_start}}"}
++	if len(got) != 1 || got[0] != want[0] {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++}
++
++func TestFlushTrailingText_EndsExactlyOnPunctuation(t *testing.T) {
++	// Nothing left over -- must not append an empty/whitespace chunk.
++	got := flushTrailingText([]string{"Sure!", "That works."}, "")
++	want := []string{"Sure!", "That works."}
++	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
++		t.Fatalf("got %v, want %v", got, want)
++	}
++}
++
++func TestFlushTrailingText_WhitespaceOnlyTrailerIsDropped(t *testing.T) {
++	got := flushTrailingText([]string{"Sure!"}, "   ")
++	if len(got) != 1 {
++		t.Fatalf("expected whitespace-only trailer to be dropped, got %v", got)
++	}
++}
++
++func TestFlushTrailingText_DoesNotMutateInput(t *testing.T) {
++	in := []string{"Sure!"}
++	_ = flushTrailingText(in, "more")
++	if len(in) != 1 || in[0] != "Sure!" {
++		t.Fatalf("expected input slice to be left untouched, got %v", in)
++	}
++}
++
++// --- needsFallbackResponse ---
++
++func TestNeedsFallbackResponse_RealTextNeedsNoFallback(t *testing.T) {
++	if needsFallbackResponse([]string{"I think it's daytime right now"}) {
++		t.Fatalf("expected real spoken text to need no fallback")
++	}
++}
++
++func TestNeedsFallbackResponse_BareCommandNeedsNoFallback(t *testing.T) {
++	// The command WILL do something (e.g. explore) even though nothing is
++	// spoken -- no fallback phrase should be injected on top of it.
++	if needsFallbackResponse([]string{"{{doIntent||intent_explore_start}}"}) {
++		t.Fatalf("expected a bare command to need no fallback (the action itself is the response)")
++	}
++}
++
++func TestNeedsFallbackResponse_TrulyEmptyNeedsFallback(t *testing.T) {
++	if !needsFallbackResponse(nil) {
++		t.Fatalf("expected a completely empty response to need the fallback")
++	}
++}
++
++func TestNeedsFallbackResponse_WhitespaceOnlyNeedsFallback(t *testing.T) {
++	if !needsFallbackResponse([]string{"   "}) {
++		t.Fatalf("expected whitespace-only content to need the fallback")
++	}
++}
++
++// --- truncateForLog ---
++
++func TestTruncateForLog_ShortStringUnchanged(t *testing.T) {
++	if got := truncateForLog("hello", 300); got != "hello" {
++		t.Fatalf("got %q, want unchanged", got)
++	}
++}
++
++func TestTruncateForLog_LongStringTruncated(t *testing.T) {
++	long := make([]rune, 400)
++	for i := range long {
++		long[i] = 'a'
++	}
++	got := truncateForLog(string(long), 300)
++	if len(got) <= 300 {
++		t.Fatalf("expected a truncation marker appended, got len=%d", len(got))
++	}
++	if got[:300] != string(long[:300]) {
++		t.Fatalf("expected the first 300 runes to be preserved unchanged")
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index b13c5bf..a633e7b 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -5,7 +5,9 @@ import (
+ 	"encoding/json"
+ 	"fmt"
+ 	"os/exec"
++	"regexp"
+ 	"strings"
++	"time"
+ 
+ 	pb "github.com/digital-dream-labs/api/go/chipperpb"
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
+@@ -108,68 +110,32 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 				// System intents can also match any utterances (*)
+ 				if (c.IsSystemIntent && strings.HasPrefix(seekText, "*")) || strings.Contains(voiceText, seekText) {
+ 					logger.Println("Bot " + botSerial + " Custom Intent Matched: " + c.Name + " - " + c.Description + " - " + c.Intent)
+-					var intentParams map[string]string
+-					var isParam bool = false
+-					if c.Params.ParamValue != "" {
+-						logger.Println("Bot " + botSerial + " Custom Intent Parameter: " + c.Params.ParamName + " - " + c.Params.ParamValue)
+-						intentParams = map[string]string{c.Params.ParamName: c.Params.ParamValue}
+-						isParam = true
+-					}
+ 
+-					go func() {
+-						if c.LuaScript != "" {
+-							err := scripting.RunLuaScript(botSerial, c.LuaScript)
+-							if err != nil {
+-								logger.Println("Error running Lua script: " + err.Error())
+-							}
+-						}
+-					}()
+-
+-					var args []string
+-					for _, arg := range c.ExecArgs {
+-						switch arg {
+-						case "!botSerial":
+-							arg = botSerial
+-						case "!speechText":
+-							arg = "\"" + voiceText + "\""
+-						case "!intentName":
+-							arg = c.Name
+-						case "!locale":
+-							arg = vars.APIConfig.STT.Language
+-						}
+-						args = append(args, arg)
+-					}
+-					var customIntentExec *exec.Cmd
+-					if len(args) == 0 {
+-						logger.Println("Bot " + botSerial + " Executing: " + c.Exec)
+-						customIntentExec = exec.Command(c.Exec)
+-					} else {
+-						logger.Println("Bot " + botSerial + " Executing: " + c.Exec + " " + strings.Join(args, " "))
+-						customIntentExec = exec.Command(c.Exec, args...)
+-					}
+-					var out bytes.Buffer
+-					var stderr bytes.Buffer
+-					customIntentExec.Stdout = &out
+-					customIntentExec.Stderr = &stderr
+-					err := customIntentExec.Run()
+-					if err != nil {
+-						fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
+-					}
+-					logger.Println("Bot " + botSerial + " Custom Intent Exec Output: " + strings.TrimSpace(string(out.String())))
+-
+-					if c.IsSystemIntent {
+-						// A system intent returns its output in json format
+-						var resp systemIntentResponseStruct
+-						err := json.Unmarshal(out.Bytes(), &resp)
+-						if err == nil && resp.Status == "ok" {
+-							logger.Println("Bot " + botSerial + " System intent parsed and executed successfully")
+-							IntentPass(req, resp.ReturnIntent, voiceText, intentParams, isParam)
++					// Ask-Hermes-with-empty-question fix (2026-09-27,
++					// Hermes; the owner: "he is cutting me off"): if nothing
++					// real was said after the trigger phrase, reprompt and
++					// listen for the actual question as a follow-up
++					// instead of running ask_hermes.py with just the bare
++					// trigger phrase as the "question". See pendinghermes.go.
++					if c.Name == "intent_ask_hermes" {
++						question := extractHermesQuestion(voiceText)
++						if len(strings.TrimSpace(question)) < minHermesQuestionLen {
++							logger.Println("Bot " + botSerial + " ask_hermes matched with an empty/short question -- reprompting instead of asking Hermes")
++							RecordPendingHermesQuestion(botSerial)
++							go func() {
++								KGSim(botSerial, hermesRepromptText)
++								time.Sleep(hermesRepromptFollowUpDelay)
++								if err := TriggerFollowUpListen(botSerial); err != nil {
++									logger.Println("Ask-Hermes reprompt: failed to trigger follow-up listen for " + botSerial + ": " + err.Error())
++								}
++							}()
+ 							successMatched = true
++							break
+ 						}
+-					} else {
+-						IntentPass(req, c.Intent, voiceText, intentParams, isParam)
+-						successMatched = true
+ 					}
++
++					runCustomIntentExec(req, c, voiceText, botSerial)
++					successMatched = true
+ 					break
+ 				}
+ 				if successMatched {
+@@ -184,6 +150,100 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 	return successMatched
+ }
+ 
++// runCustomIntentExec runs one matched custom intent's Lua script (if any)
++// and Exec/ExecArgs, then sends the appropriate IntentPass response. Split
++// out of customIntentHandler 2026-09-27 (Hermes) so it can also be invoked
++// directly for a pending Hermes follow-up question (see
++// runAskHermesWithQuestion below), bypassing the utterance-matching loop.
++func runCustomIntentExec(req interface{}, c vars.CustomIntent, voiceText string, botSerial string) {
++	var intentParams map[string]string
++	var isParam bool = false
++	if c.Params.ParamValue != "" {
++		logger.Println("Bot " + botSerial + " Custom Intent Parameter: " + c.Params.ParamName + " - " + c.Params.ParamValue)
++		intentParams = map[string]string{c.Params.ParamName: c.Params.ParamValue}
++		isParam = true
++	}
++
++	go func() {
++		if c.LuaScript != "" {
++			err := scripting.RunLuaScript(botSerial, c.LuaScript)
++			if err != nil {
++				logger.Println("Error running Lua script: " + err.Error())
++			}
++		}
++	}()
++
++	var args []string
++	for _, arg := range c.ExecArgs {
++		switch arg {
++		case "!botSerial":
++			arg = botSerial
++		case "!speechText":
++			arg = "\"" + voiceText + "\""
++		case "!intentName":
++			arg = c.Name
++		case "!locale":
++			arg = vars.APIConfig.STT.Language
++		}
++		args = append(args, arg)
++	}
++	var customIntentExec *exec.Cmd
++	if len(args) == 0 {
++		logger.Println("Bot " + botSerial + " Executing: " + c.Exec)
++		customIntentExec = exec.Command(c.Exec)
++	} else {
++		logger.Println("Bot " + botSerial + " Executing: " + c.Exec + " " + strings.Join(args, " "))
++		customIntentExec = exec.Command(c.Exec, args...)
++	}
++	var out bytes.Buffer
++	var stderr bytes.Buffer
++	customIntentExec.Stdout = &out
++	customIntentExec.Stderr = &stderr
++	err := customIntentExec.Run()
++	if err != nil {
++		fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
++	}
++	logger.Println("Bot " + botSerial + " Custom Intent Exec Output: " + strings.TrimSpace(string(out.String())))
++
++	if c.IsSystemIntent {
++		// A system intent returns its output in json format
++		var resp systemIntentResponseStruct
++		err := json.Unmarshal(out.Bytes(), &resp)
++		if err == nil && resp.Status == "ok" {
++			logger.Println("Bot " + botSerial + " System intent parsed and executed successfully")
++			IntentPass(req, resp.ReturnIntent, voiceText, intentParams, isParam)
++		}
++	} else {
++		IntentPass(req, c.Intent, voiceText, intentParams, isParam)
++	}
++}
++
++// hermesTriggerRe mirrors ask_hermes.py's TRIGGER_RE (Go port), EXCEPT
++// extractHermesQuestion does NOT fall back to the original text when
++// nothing is left after stripping -- that Python-side fallback was how a
++// bare "ask hermes" ended up being sent to Hermes AS the question. An
++// empty result here correctly means "no real question was asked."
++var hermesTriggerRe = regexp.MustCompile(`(?i)^\s*(ask|tell|hey)?\s*(hermes|her\s+mes|her\s+me|hermies|hermie)\s*(to|that|if|a\s+question)?\s*[,:]?\s*`)
++
++func extractHermesQuestion(voiceText string) string {
++	return strings.TrimSpace(hermesTriggerRe.ReplaceAllString(strings.TrimSpace(voiceText), ""))
++}
++
++// runAskHermesWithQuestion routes a follow-up utterance directly to the
++// intent_ask_hermes custom intent as the question, bypassing normal
++// intent/LLM routing entirely. Called from ProcessTextAll when
++// ConsumePendingHermesQuestion reports a pending reprompt for this ESN.
++func runAskHermesWithQuestion(req interface{}, botSerial, question string) bool {
++	for _, c := range vars.CustomIntents {
++		if c.Name == "intent_ask_hermes" {
++			runCustomIntentExec(req, c, question, botSerial)
++			return true
++		}
++	}
++	logger.Println("Bot " + botSerial + " had a pending Hermes question but intent_ask_hermes is no longer configured -- dropping")
++	return false
++}
++
+ func pluginFunctionHandler(req interface{}, voiceText string, botSerial string) bool {
+ 	matched := false
+ 	var intent string
+@@ -239,6 +299,45 @@ func pluginFunctionHandler(req interface{}, voiceText string, botSerial string)
+ 	return matched
+ }
+ 
++// SocialLLMIntents lists built-in (en-US.json) intents that are treated as
++// UNMATCHED when Knowledge.LLMFirst is on, so these conversational/social
++// utterances fall through to the LLM for a real spoken reply instead of a canned
++// built-in response. Added 2026-09-26b (Hermes), per the owner: "any of his core
++// commands, or setting changes to his display or sounds should go to him before
++// the llm" - core commands/actions/settings (timers, volume, eye color, movement,
++// games, weather, clock, photo, sleep, charger, etc.) are NOT in this list and
++// keep matching built-in first exactly as before, llm_first or not.
++var SocialLLMIntents = []string{
++	"intent_greeting_hello",
++	"intent_greeting_goodmorning",
++	"intent_greeting_goodnight",
++	"intent_greeting_goodbye",
++	"intent_seasonal_happynewyear",
++	"intent_seasonal_happyholidays",
++	"intent_character_age",
++	"intent_imperative_praise",
++	"intent_imperative_abuse",
++	"intent_imperative_apologize",
++	"intent_imperative_love",
++	"intent_imperative_affirmative",
++	"intent_imperative_negative",
++	"intent_knowledge_promptquestion",
++	// 2026-09-27 bug hunt (Hermes): built-in "what is your name" intent -- moved to
++	// SOCIAL so it gets the LLM persona (name: Little Man) instead of the stock
++	// CORE canned reply ("Vector"). Needs a chipper rebuild+redeploy to take effect;
++	// left unbuilt pending the owner OK (see project_vector.md bug-hunt notes).
++	"intent_names_ask",
++}
++
++func isSocialLLMIntent(name string) bool {
++	for _, s := range SocialLLMIntents {
++		if s == name {
++			return true
++		}
++	}
++	return false
++}
++
+ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent, isOpus bool) bool {
+ 	var botSerial string
+ 	var req2 *vtt.IntentRequest
+@@ -254,65 +353,170 @@ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent
+ 		req3 = str
+ 		botSerial = req3.Device
+ 	}
+-	var matched int = 0
+-	var intentNum int = 0
+-	var successMatched bool = false
+ 	voiceText = strings.ToLower(voiceText)
++
++	// Ask-Hermes-with-empty-question fix (2026-09-27, Hermes): if the
++	// PREVIOUS turn armed a "what do you want to ask Hermes?" reprompt for
++	// this robot, this WHOLE utterance is the answer -- send it straight
++	// to ask_hermes, bypassing CORE/SOCIAL matching and the LLM entirely.
++	if ConsumePendingHermesQuestion(botSerial) {
++		logger.Println("Bot " + botSerial + " routing follow-up utterance to ask_hermes as the pending question")
++		return runAskHermesWithQuestion(req, botSerial, voiceText)
++	}
++
+ 	pluginMatched := pluginFunctionHandler(req, voiceText, botSerial)
+ 	customIntentMatched := customIntentHandler(req, voiceText, botSerial)
+-	if !customIntentMatched && !pluginMatched {
+-		logger.Println("Not a custom intent")
+-		// Look for a perfect match first
+-		for _, b := range intents {
+-			for _, c := range b.Keyphrases {
+-				if voiceText == strings.ToLower(c) {
+-					logger.Println("Bot " + botSerial + " Perfect match for intent " + b.Name + " (" + strings.ToLower(c) + ")")
+-					if isOpus {
+-						ParamChecker(req, b.Name, voiceText, botSerial)
+-					} else {
+-						prehistoricParamChecker(req, b.Name, voiceText)
+-					}
+-					successMatched = true
+-					matched = 1
+-					break
++	if customIntentMatched || pluginMatched {
++		logger.Println("This is a custom intent or plugin!")
++		return true
++	}
++	logger.Println("Not a custom intent")
++
++	result := findIntentMatch(voiceText, intents, vars.APIConfig.Knowledge.LLMFirst)
++
++	for _, note := range result.DeferredSocialLogs {
++		logger.Println("Bot " + botSerial + " " + note)
++	}
++
++	if !result.Found {
++		if result.FellBackFromSocial {
++			logger.Println("Bot " + botSerial + " no CORE match found after full scan - falling back to SOCIAL intent match, llm_first on, routing to LLM")
++		}
++		return false
++	}
++
++	matchKind := "Perfect"
++	if !result.IsPerfect {
++		matchKind = "Partial"
++	}
++	logger.Println("Bot " + botSerial + " " + matchKind + " match for intent " + result.IntentName + " (" + result.Keyphrase + ")")
++	// Conversation mode (2026-09-26d, Hermes): a genuine CORE intent match
++	// (never a deferred SOCIAL match -- those don't reach here, see
++	// findIntentMatch) is a real command like "explore" or "set a timer" --
++	// end any active auto-listen conversation rather than re-opening the
++	// mic after it runs.
++	EndConversation(botSerial)
++	if isOpus {
++		ParamChecker(req, result.IntentName, voiceText, botSerial)
++	} else {
++		prehistoricParamChecker(req, result.IntentName, voiceText)
++	}
++	return true
++}
++
++// intentMatchResult is findIntentMatch's pure result: which intent (if any)
++// matched, and any SOCIAL-intent matches that were deferred along the way
++// (surfaced as pre-formatted log lines so findIntentMatch stays side-effect
++// free and directly unit-testable).
++type intentMatchResult struct {
++	Found               bool
++	IntentName          string
++	Keyphrase           string
++	IsPerfect           bool
++	FellBackFromSocial  bool
++	DeferredSocialLogs  []string
++}
++
++// findIntentMatch is the pure matching decision at the heart of
++// ProcessTextAll, split out 2026-09-26c (Hermes) so it can be unit-tested
++// directly with no req/gRPC mocking required. It has NO side effects
++// (no logging, no ParamChecker dispatch) -- callers turn its result into
++// log lines / dispatch calls.
++//
++// Fix 2026-09-26c (Hermes): a SOCIAL-intent match (perfect or substring)
++// used to immediately stop the ENTIRE search and route to the LLM, even
++// when a later intent in the list was a genuine CORE match ("turn your
++// eyes red" substring-matched SOCIAL intent_imperative_affirmative on
++// "yes" inside "eyes", and the search stopped there before ever checking
++// later intents). Now: scan ALL intents for a CORE (non-SOCIAL) match
++// first, in both the perfect-match pass and the substring pass; a SOCIAL
++// match found along the way is deferred (recorded, not acted on) and does
++// NOT stop the scan. Only if no CORE match exists in either pass do we
++// report "not found" with FellBackFromSocial=true, so the caller routes to
++// the LLM -- same as the original llm_first-on SOCIAL-routing behavior.
++func findIntentMatch(voiceText string, intents []vars.JsonIntent, llmFirst bool) intentMatchResult {
++	var deferredLogs []string
++	var socialFallbackLogged bool
++
++	deferOrReturn := func(b vars.JsonIntent, kp string, isPerfect bool) (intentMatchResult, bool) {
++		if llmFirst && isSocialLLMIntent(b.Name) {
++			if !socialFallbackLogged {
++				kind := "Perfect"
++				if !isPerfect {
++					kind = "Partial"
+ 				}
++				deferredLogs = append(deferredLogs, kind+" match for SOCIAL intent "+b.Name+" ("+kp+") - llm_first on, deferring to keep looking for a CORE match")
++				socialFallbackLogged = true
+ 			}
+-			if matched == 1 {
+-				matched = 0
+-				break
++			return intentMatchResult{}, false
++		}
++		return intentMatchResult{
++			Found:      true,
++			IntentName: b.Name,
++			Keyphrase:  kp,
++			IsPerfect:  isPerfect,
++		}, true
++	}
++
++	// Perfect match pass (whole utterance == keyphrase)
++	for _, b := range intents {
++		for _, c := range b.Keyphrases {
++			kp := strings.ToLower(c)
++			if voiceText != kp {
++				continue
+ 			}
+-			intentNum = intentNum + 1
++			if res, ok := deferOrReturn(b, kp, true); ok {
++				res.DeferredSocialLogs = deferredLogs
++				return res
++			}
++			break // move to next intent -- a deferred social match consumes this intent
+ 		}
+-		// Not found? Then let's be happy with a bare substring search
+-		if !successMatched {
+-			intentNum = 0
+-			matched = 0
+-			for _, b := range intents {
+-				for _, c := range b.Keyphrases {
+-					if strings.Contains(voiceText, strings.ToLower(c)) && !b.RequireExactMatch {
+-						logger.Println("Bot " + botSerial + " Partial match for intent " + b.Name + " (" + strings.ToLower(c) + ")")
+-						if isOpus {
+-							ParamChecker(req, b.Name, voiceText, botSerial)
+-						} else {
+-							prehistoricParamChecker(req, b.Name, voiceText)
+-						}
+-						successMatched = true
+-						matched = 1
+-						break
+-					}
+-				}
+-				if matched == 1 {
+-					matched = 0
+-					break
+-				}
+-				intentNum = intentNum + 1
++	}
++
++	// Not found? Then let's be happy with a bare substring search
++	for _, b := range intents {
++		if b.RequireExactMatch {
++			continue
++		}
++		for _, c := range b.Keyphrases {
++			kp := strings.ToLower(c)
++			if !keyphraseMatches(voiceText, kp) {
++				continue
+ 			}
++			if res, ok := deferOrReturn(b, kp, false); ok {
++				res.DeferredSocialLogs = deferredLogs
++				return res
++			}
++			break
+ 		}
+-	} else {
+-		logger.Println("This is a custom intent or plugin!")
+-		successMatched = true
+ 	}
+-	return successMatched
++
++	return intentMatchResult{
++		Found:               false,
++		FellBackFromSocial:  socialFallbackLogged,
++		DeferredSocialLogs:  deferredLogs,
++	}
++}
++
++// keyphraseMatches reports whether keyphrase appears in voiceText as a
++// substring match, the same as the original `strings.Contains` behavior,
++// EXCEPT that short keyphrases (<=4 chars, e.g. "yes", "no") must match on
++// word boundaries -- otherwise "yes" matches inside "eyes", "no" matches
++// inside "snow"/"know", etc. Added 2026-09-26c (Hermes) alongside the
++// SOCIAL/CORE scan-order fix above; this closes the same class of bug at
++// the source for the shortest, highest-collision-risk keyphrases.
++var shortKeyphraseBoundaryCache = map[string]*regexp.Regexp{}
++
++func keyphraseMatches(voiceText string, keyphrase string) bool {
++	if len(keyphrase) > 4 {
++		return strings.Contains(voiceText, keyphrase)
++	}
++	re, ok := shortKeyphraseBoundaryCache[keyphrase]
++	if !ok {
++		re = regexp.MustCompile(`\b` + regexp.QuoteMeta(keyphrase) + `\b`)
++		shortKeyphraseBoundaryCache[keyphrase] = re
++	}
++	return re.MatchString(voiceText)
+ }
+ 
+ func KnowledgeGraphResponseIG(req *vtt.IntentGraphRequest, spokenText string, queryText string) error {
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend_scan_test.go b/chipper/pkg/wirepod/ttr/matchIntentSend_scan_test.go
+new file mode 100644
+index 0000000..058c0f5
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend_scan_test.go
+@@ -0,0 +1,130 @@
++package wirepod_ttr
++
++import (
++	"testing"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// realIntents is a representative slice pulled verbatim from
++// chipper/intent-data/en-US.json (keyphrases copied exactly) covering the
++// four cases in the 2026-09-26c bug report, so these tests exercise real
++// production keyphrase data, not a hand-picked toy list.
++func realIntents() []vars.JsonIntent {
++	return []vars.JsonIntent{
++		{
++			Name:       "intent_imperative_eyecolor",
++			Keyphrases: []string{"eye color", "colo", "i call her", "i foller", "icolor", "ecce", "erior", "ichor", "agricola", "change", "oracular", "oracle", "set your eye color to"},
++		},
++		{
++			Name:       "intent_greeting_goodmorning",
++			Keyphrases: []string{"morning", "mourning", "mooning", "it bore", "afternoon", "after noon", "after whom", "good morning"},
++		},
++		{
++			Name:       "intent_imperative_affirmative",
++			Keyphrases: []string{"yes", "correct", "sure", "yes please"},
++		},
++		{
++			Name:       "intent_clock_settimer_extend",
++			Keyphrases: []string{"timer", "time for", "time of for", "time or", "time of", "set a timer for"},
++		},
++	}
++}
++
++func TestFindIntentMatch_TurnYourEyesRed_GoesToLLM(t *testing.T) {
++	// This is the exact regression case from the 2026-09-26c bug report.
++	// With the word-boundary fix, "yes" no longer even matches inside
++	// "eyes" (no boundary between 'e' and 'y'), so this now falls through
++	// to the LLM cleanly with no CORE keyword match and no SOCIAL
++	// deferral either -- eye color changes for this phrasing are handled
++	// by the LLM's own {{doIntent||intent_imperative_eyecolor}} mechanism,
++	// not by keyword matching, so "goes to LLM" IS the correct outcome
++	// here, not a bug.
++	res := findIntentMatch("turn your eyes red", realIntents(), true)
++	if res.Found {
++		t.Fatalf("expected no keyword match (should fall through to LLM), got intent %q", res.IntentName)
++	}
++}
++
++func TestFindIntentMatch_Yes_GoesToLLM(t *testing.T) {
++	res := findIntentMatch("yes", realIntents(), true)
++	if res.Found {
++		t.Fatalf("expected SOCIAL-only match to fall through to LLM, got intent %q", res.IntentName)
++	}
++	if !res.FellBackFromSocial {
++		t.Fatalf("expected FellBackFromSocial=true (deferred SOCIAL match with no CORE alternative)")
++	}
++}
++
++func TestFindIntentMatch_GoodMorning_GoesToLLM(t *testing.T) {
++	res := findIntentMatch("good morning", realIntents(), true)
++	if res.Found {
++		t.Fatalf("expected SOCIAL-only match to fall through to LLM, got intent %q", res.IntentName)
++	}
++	if !res.FellBackFromSocial {
++		t.Fatalf("expected FellBackFromSocial=true")
++	}
++}
++
++func TestFindIntentMatch_SetATimer_MatchesTimer(t *testing.T) {
++	res := findIntentMatch("set a timer for 5 minutes", realIntents(), true)
++	if !res.Found {
++		t.Fatalf("expected a CORE match for the timer intent, got none (fell through to LLM)")
++	}
++	if res.IntentName != "intent_clock_settimer_extend" {
++		t.Fatalf("expected intent_clock_settimer_extend, got %q (keyphrase %q)", res.IntentName, res.Keyphrase)
++	}
++}
++
++// TestFindIntentMatch_SocialDoesNotBlockLaterCoreMatch is a synthetic
++// regression test using a SOCIAL keyphrase long enough (>4 chars) that the
++// word-boundary fix alone does NOT prevent the collision -- isolating and
++// proving the scan-order fix specifically (continue past a deferred SOCIAL
++// match instead of aborting the whole search). Before the 2026-09-26c fix,
++// this test fails: the old code stopped at "please" and never reached
++// "widgetcolor".
++func TestFindIntentMatch_SocialDoesNotBlockLaterCoreMatch(t *testing.T) {
++	intents := []vars.JsonIntent{
++		{Name: "intent_imperative_affirmative", Keyphrases: []string{"please"}},
++		{Name: "intent_test_widgetcolor", Keyphrases: []string{"widgetcolor"}},
++	}
++	res := findIntentMatch("please change to widgetcolor", intents, true)
++	if !res.Found {
++		t.Fatalf("expected the later CORE match (widgetcolor) to be found, got none -- the SOCIAL match at 'please' incorrectly blocked the scan")
++	}
++	if res.IntentName != "intent_test_widgetcolor" {
++		t.Fatalf("expected intent_test_widgetcolor, got %q", res.IntentName)
++	}
++	if len(res.DeferredSocialLogs) != 1 {
++		t.Fatalf("expected exactly one deferred SOCIAL log entry, got %d: %v", len(res.DeferredSocialLogs), res.DeferredSocialLogs)
++	}
++}
++
++func TestFindIntentMatch_LLMFirstOff_SocialMatchesNormally(t *testing.T) {
++	// Sanity check: with llm_first OFF, SOCIAL intents behave exactly like
++	// any other intent (matched immediately, no deferral) -- unchanged
++	// from pre-2026-09-26 behavior.
++	res := findIntentMatch("yes", realIntents(), false)
++	if !res.Found || res.IntentName != "intent_imperative_affirmative" {
++		t.Fatalf("expected direct match to intent_imperative_affirmative with llm_first off, got Found=%v Name=%q", res.Found, res.IntentName)
++	}
++}
++
++func TestKeyphraseMatches_ShortKeyphrasesRequireWordBoundary(t *testing.T) {
++	cases := []struct {
++		voiceText, keyphrase string
++		want                 bool
++	}{
++		{"turn your eyes red", "yes", false},  // "yes" inside "eyes" -- no boundary, must NOT match
++		{"say yes please", "yes", true},       // "yes" as its own word -- must match
++		{"the snow is falling", "no", false},  // "no" inside "snow" -- must NOT match
++		{"say no thanks", "no", true},         // "no" as its own word -- must match
++		{"good morning vector", "morning", true}, // >4 chars: plain substring behavior unchanged
++	}
++	for _, c := range cases {
++		got := keyphraseMatches(c.voiceText, c.keyphrase)
++		if got != c.want {
++			t.Errorf("keyphraseMatches(%q, %q) = %v, want %v", c.voiceText, c.keyphrase, got, c.want)
++		}
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/pendinghermes.go b/chipper/pkg/wirepod/ttr/pendinghermes.go
+new file mode 100644
+index 0000000..a8b18a7
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/pendinghermes.go
+@@ -0,0 +1,99 @@
++package wirepod_ttr
++
++// pendinghermes.go -- added 2026-09-27. the owner: "he is cutting me off" --
++// when the ask_hermes custom intent fires with an empty/very short
++// question (just "ask hermes" with nothing after it), Vector now asks for
++// clarification and listens for the actual question as a follow-up,
++// instead of either (a) sending the bare trigger phrase itself to Hermes
++// as if it were the question (the OLD behavior --
++// ask_hermes.py's extract_question fell back to the full original text,
++// including the trigger phrase, when nothing was left after stripping it),
++// or (b) saying nothing useful.
++//
++// This has to live pod-side (not in ask_hermes.py): routing the NEXT,
++// separate voice request to ask_hermes instead of the LLM is a wire-pod
++// intent-routing decision (ProcessTextAll in matchIntentSend.go), which a
++// backgrounded Python script invoked via exec has no way to influence.
++//
++// See matchIntentSend.go: customIntentHandler's intent_ask_hermes case
++// records the pending flag (via RecordPendingHermesQuestion) and speaks
++// the reprompt when the extracted question is too short; ProcessTextAll
++// checks ConsumePendingHermesQuestion at the very top, before any other
++// routing, and if set, sends the ENTIRE next utterance straight to
++// intent_ask_hermes's exec as the question (runAskHermesWithQuestion),
++// bypassing CORE/SOCIAL keyword matching and the LLM entirely for that
++// turn.
++
++import (
++	"sync"
++	"time"
++)
++
++// pendingHermesQuestionTTL bounds how long a "what do you want to ask
++// Hermes?" reprompt stays armed. If nothing (or silence) follows within
++// this window, the flag simply expires -- the next real utterance goes
++// through normal routing again.
++const pendingHermesQuestionTTL = 15 * time.Second
++
++// minHermesQuestionLen is the shortest (trimmed) extracted question that's
++// treated as "real" rather than empty/a bare trigger phrase.
++const minHermesQuestionLen = 3
++
++// hermesRepromptText is spoken when ask_hermes fires with no real question
++// attached.
++const hermesRepromptText = "Sure, what do you want to ask Hermes?"
++
++// hermesRepromptFollowUpDelay is how long to wait after starting the
++// reprompt speech before re-opening the mic for the follow-up -- KGSim
++// speaks asynchronously with no synchronous "done" signal back to the
++// caller, so this is a fixed, generous estimate for a short phrase (same
++// ad-hoc-timing convention already used throughout this codebase, e.g.
++// DoNewRequest's 333ms delay, conversationPostSpeechDelay).
++const hermesRepromptFollowUpDelay = 2500 * time.Millisecond
++
++type pendingHermesEntry struct {
++	ESN       string
++	ExpiresAt time.Time
++}
++
++var (
++	pendingHermesQuestions   []pendingHermesEntry
++	pendingHermesQuestionsMu sync.Mutex
++)
++
++// RecordPendingHermesQuestion arms the reprompt-followup flag for esn,
++// replacing any existing one.
++func RecordPendingHermesQuestion(esn string) {
++	recordPendingHermesQuestionWithExpiry(esn, time.Now().Add(pendingHermesQuestionTTL))
++}
++
++// recordPendingHermesQuestionWithExpiry is the same as
++// RecordPendingHermesQuestion but takes an explicit expiry -- split out so
++// tests can arm an already-expired entry without a real 15s wait.
++func recordPendingHermesQuestionWithExpiry(esn string, expiresAt time.Time) {
++	pendingHermesQuestionsMu.Lock()
++	defer pendingHermesQuestionsMu.Unlock()
++	entry := pendingHermesEntry{ESN: esn, ExpiresAt: expiresAt}
++	for i, e := range pendingHermesQuestions {
++		if e.ESN == esn {
++			pendingHermesQuestions[i] = entry
++			return
++		}
++	}
++	pendingHermesQuestions = append(pendingHermesQuestions, entry)
++}
++
++// ConsumePendingHermesQuestion reports whether esn has a non-expired
++// pending "what do you want to ask Hermes?" flag, removing it either way
++// (expired or not) so a stale entry never lingers to be found twice.
++func ConsumePendingHermesQuestion(esn string) bool {
++	pendingHermesQuestionsMu.Lock()
++	defer pendingHermesQuestionsMu.Unlock()
++	for i, e := range pendingHermesQuestions {
++		if e.ESN == esn {
++			pendingHermesQuestions = append(pendingHermesQuestions[:i], pendingHermesQuestions[i+1:]...)
++			return time.Now().Before(e.ExpiresAt)
++		}
++	}
++	return false
++}
+diff --git a/chipper/pkg/wirepod/ttr/pendinghermes_test.go b/chipper/pkg/wirepod/ttr/pendinghermes_test.go
+new file mode 100644
+index 0000000..f51e36f
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/pendinghermes_test.go
+@@ -0,0 +1,48 @@
++package wirepod_ttr
++
++import (
++	"testing"
++	"time"
++)
++
++func TestConsumePendingHermesQuestion_NotArmed(t *testing.T) {
++	if ConsumePendingHermesQuestion("esn-never-armed-hermes") {
++		t.Fatalf("expected false when nothing was ever recorded")
++	}
++}
++
++func TestConsumePendingHermesQuestion_ArmedAndFresh(t *testing.T) {
++	esn := "test-esn-hermes-fresh"
++	RecordPendingHermesQuestion(esn)
++
++	if !ConsumePendingHermesQuestion(esn) {
++		t.Fatalf("expected a freshly armed flag to be consumed as true")
++	}
++	// Consuming clears it -- a second call must report false.
++	if ConsumePendingHermesQuestion(esn) {
++		t.Fatalf("expected the flag to be cleared after being consumed once")
++	}
++}
++
++func TestConsumePendingHermesQuestion_Expired(t *testing.T) {
++	esn := "test-esn-hermes-expired"
++	recordPendingHermesQuestionWithExpiry(esn, time.Now().Add(-1*time.Second))
++
++	if ConsumePendingHermesQuestion(esn) {
++		t.Fatalf("expected an expired flag to report false")
++	}
++	// Still consumed (removed) even though expired -- no lingering entry.
++	if ConsumePendingHermesQuestion(esn) {
++		t.Fatalf("expected the expired entry to have been removed on first consume")
++	}
++}
++
++func TestRecordPendingHermesQuestion_ReplacesForSameESN(t *testing.T) {
++	esn := "test-esn-hermes-replace"
++	recordPendingHermesQuestionWithExpiry(esn, time.Now().Add(-1*time.Second)) // armed but already expired
++	RecordPendingHermesQuestion(esn)                                          // re-armed fresh
++
++	if !ConsumePendingHermesQuestion(esn) {
++		t.Fatalf("expected the fresh re-arm to replace the expired entry, not stack alongside it")
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/pendingintent.go b/chipper/pkg/wirepod/ttr/pendingintent.go
+new file mode 100644
+index 0000000..5d0a096
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/pendingintent.go
+@@ -0,0 +1,133 @@
++package wirepod_ttr
++
++// pendingintent.go -- added 2026-09-27. Defers a whitelisted LLM
++// {{doIntent||...}} call until AFTER the KG response has finished speaking
++// AND behavior control has been released, instead of firing it immediately
++// (in a goroutine, after a fixed short delay) WHILE wire-pod still holds
++// OVERRIDE_BEHAVIORS for speech.
++//
++// Root cause of the 2026-09-27 bug ("explore mode" got a spoken
++// confirmation -- "Exploring mode activated." -- but the robot never
++// moved): DoIntent (kgsim_cmds.go) fired AppIntent from a goroutine ~333ms
++// after being called, but PerformActions kept right on speaking whatever
++// text followed the {{doIntent||...}} marker in the same LLM response,
++// which meant wire-pod was still holding OVERRIDE_BEHAVIORS behavior
++// control when the AppIntent for "explore" landed on the robot -- so the
++// explore behavior got dropped/overridden by the robot's own behavior
++// system instead of actually running.
++//
++// The fix has two halves:
++//  1. PerformActions' ActionDoIntent case (kgsim_cmds.go) now calls
++//     RecordPendingIntent and stops speaking immediately (returns
++//     disconnect=true), instead of calling DoIntent and continuing.
++//  2. kgsim.go's StreamingKGSim calls FirePendingIntentAfterRelease at the
++//     SAME point it already calls conversation.go's MaybeContinueConversation
++//     -- right after behavior control has been released for this turn.
++//
++// Conversation mode already skips auto-listening after a doIntent
++// (decideConversationContinuation checks the raw reply text for
++// "{{doIntent", which is still present in fullfullRespText regardless of
++// this change) -- verified by TestDecideConversationContinuation_DoIntentSuppresses
++// and TestMaybeContinueConversation_DoIntentNeverTriggers in
++// conversation_test.go, unchanged by this fix.
++
++import (
++	"sync"
++	"time"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++)
++
++// pendingIntentPostReleaseDelay is how long FirePendingIntentAfterRelease
++// waits after behavior control is released before firing the AppIntent
++// call. The release itself is sent by a separate goroutine (BControl in
++// bcontrol.go) with no synchronous confirmation channel back to the
++// caller, so this gives the ControlRelease message time to actually land
++// on the robot before we ask it to run a new behavior.
++const pendingIntentPostReleaseDelay = 300 * time.Millisecond
++
++type pendingIntentEntry struct {
++	ESN    string
++	Intent string
++}
++
++var (
++	pendingIntents   []pendingIntentEntry
++	pendingIntentsMu sync.Mutex
++)
++
++// RecordPendingIntent queues a doIntent call for esn, replacing any
++// previously queued (unfired) one for the same ESN -- only the most recent
++// command a turn asked for should ever fire.
++func RecordPendingIntent(esn, intentName string) {
++	pendingIntentsMu.Lock()
++	defer pendingIntentsMu.Unlock()
++	for i, p := range pendingIntents {
++		if p.ESN == esn {
++			pendingIntents[i].Intent = intentName
++			return
++		}
++	}
++	pendingIntents = append(pendingIntents, pendingIntentEntry{ESN: esn, Intent: intentName})
++}
++
++// TakePendingIntent removes and returns the queued intent name for esn, if
++// any. Returns ok=false if nothing is queued.
++func TakePendingIntent(esn string) (string, bool) {
++	pendingIntentsMu.Lock()
++	defer pendingIntentsMu.Unlock()
++	for i, p := range pendingIntents {
++		if p.ESN == esn {
++			pendingIntents = append(pendingIntents[:i], pendingIntents[i+1:]...)
++			return p.Intent, true
++		}
++	}
++	return "", false
++}
++
++// hasPendingIntent reports whether esn currently has a queued intent,
++// without consuming it. Test-facing helper.
++func hasPendingIntent(esn string) bool {
++	pendingIntentsMu.Lock()
++	defer pendingIntentsMu.Unlock()
++	for _, p := range pendingIntents {
++		if p.ESN == esn {
++			return true
++		}
++	}
++	return false
++}
++
++// fireIntentFn is a package-level indirection so tests can stub out the
++// actual robot RPC without a live connection. Production code should never
++// reassign this outside of tests.
++var fireIntentFn = DoIntentNow
++
++// FirePendingIntentAfterRelease is called from the SAME release point as
++// conversation.go's MaybeContinueConversation (see the end of
++// StreamingKGSim in kgsim.go, right after behavior control is released for
++// a finished response). No-op if nothing is queued for esn -- safe to call
++// unconditionally on every release.
++//
++// Fails safe: an RPC error is logged and dropped, never retried, never
++// panics -- matches the fail-safe convention already used for conversation
++// mode's own trigger (see MaybeContinueConversation).
++//
++// Known edge case: if the response is interrupted (touched/waked, see
++// InterruptKGSimWhenTouchedOrWaked in kgsim_interrupt.go) rather than
++// ending normally, this function is never called for that turn, so a
++// queued intent stays queued and will fire at the next turn's release
++// point instead. This is intentionally not special-cased -- interruption
++// is rare, and RecordPendingIntent always replaces (never queues multiple)
++// so a stale intent can only ever be at most one turn old.
++func FirePendingIntentAfterRelease(esn string, robot *vector.Vector) {
++	intentName, ok := TakePendingIntent(esn)
++	if !ok {
++		return
++	}
++	time.Sleep(pendingIntentPostReleaseDelay)
++	if err := fireIntentFn(intentName, robot); err != nil {
++		logger.Println("Pending doIntent (" + intentName + ") failed for " + esn + ": " + err.Error())
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/pendingintent_test.go b/chipper/pkg/wirepod/ttr/pendingintent_test.go
+new file mode 100644
+index 0000000..c6ae4a1
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/pendingintent_test.go
+@@ -0,0 +1,154 @@
++package wirepod_ttr
++
++import (
++	"errors"
++	"testing"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++)
++
++func TestRecordAndTakePendingIntent_Basic(t *testing.T) {
++	esn := "test-esn-pending-basic"
++	RecordPendingIntent(esn, "intent_explore_start")
++
++	if !hasPendingIntent(esn) {
++		t.Fatalf("expected a pending intent to be recorded")
++	}
++
++	got, ok := TakePendingIntent(esn)
++	if !ok {
++		t.Fatalf("expected TakePendingIntent to find the queued intent")
++	}
++	if got != "intent_explore_start" {
++		t.Fatalf("got %q, want intent_explore_start", got)
++	}
++	if hasPendingIntent(esn) {
++		t.Fatalf("expected TakePendingIntent to consume the entry")
++	}
++}
++
++func TestTakePendingIntent_NoneQueued(t *testing.T) {
++	_, ok := TakePendingIntent("esn-with-nothing-queued-ever")
++	if ok {
++		t.Fatalf("expected ok=false when nothing is queued")
++	}
++}
++
++func TestRecordPendingIntent_ReplacesForSameESN(t *testing.T) {
++	esn := "test-esn-pending-replace"
++	RecordPendingIntent(esn, "intent_explore_start")
++	RecordPendingIntent(esn, "intent_system_charger") // a second command this turn should replace, not queue twice
++
++	got, ok := TakePendingIntent(esn)
++	if !ok || got != "intent_system_charger" {
++		t.Fatalf("expected the most recent intent (intent_system_charger), got %q ok=%v", got, ok)
++	}
++	if hasPendingIntent(esn) {
++		t.Fatalf("expected only one entry to have existed")
++	}
++}
++
++// --- FirePendingIntentAfterRelease: this is the "fires only after release
++// is called" contract -- recording a pending intent must NOT itself cause a
++// fire; only calling FirePendingIntentAfterRelease does. The robot
++// connection is stubbed out (fireIntentFn), so these pass a nil
++// *vector.Vector -- fine, since the stub never dereferences it. ---
++
++func withStubFireIntent(t *testing.T, fn func(intentName string, robot *vector.Vector) error) {
++	t.Helper()
++	orig := fireIntentFn
++	fireIntentFn = fn
++	t.Cleanup(func() { fireIntentFn = orig })
++}
++
++func TestFirePendingIntentAfterRelease_DoesNotFireBeforeCalled(t *testing.T) {
++	esn := "test-esn-fire-not-yet"
++	called := false
++	withStubFireIntent(t, func(intentName string, robot *vector.Vector) error {
++		called = true
++		return nil
++	})
++
++	RecordPendingIntent(esn, "intent_explore_start")
++	// Recording alone must not fire it -- only FirePendingIntentAfterRelease does.
++	if called {
++		t.Fatalf("expected recording a pending intent to NOT fire it immediately")
++	}
++	if !hasPendingIntent(esn) {
++		t.Fatalf("expected the intent to still be queued before release")
++	}
++}
++
++func TestFirePendingIntentAfterRelease_FiresQueuedIntent(t *testing.T) {
++	esn := "test-esn-fire-ok"
++	var gotIntent string
++	called := 0
++	withStubFireIntent(t, func(intentName string, robot *vector.Vector) error {
++		called++
++		gotIntent = intentName
++		return nil
++	})
++
++	RecordPendingIntent(esn, "intent_explore_start")
++	FirePendingIntentAfterRelease(esn, nil)
++
++	if called != 1 {
++		t.Fatalf("expected exactly one fire, got %d", called)
++	}
++	if gotIntent != "intent_explore_start" {
++		t.Fatalf("got %q, want intent_explore_start", gotIntent)
++	}
++	if hasPendingIntent(esn) {
++		t.Fatalf("expected the queued intent to be consumed after firing")
++	}
++}
++
++func TestFirePendingIntentAfterRelease_NoOpWhenNothingQueued(t *testing.T) {
++	called := 0
++	withStubFireIntent(t, func(intentName string, robot *vector.Vector) error {
++		called++
++		return nil
++	})
++
++	FirePendingIntentAfterRelease("esn-nothing-queued-for-fire", nil)
++
++	if called != 0 {
++		t.Fatalf("expected no fire when nothing was queued, called=%d", called)
++	}
++}
++
++func TestFirePendingIntentAfterRelease_ErrorFailsSafe(t *testing.T) {
++	esn := "test-esn-fire-error"
++	withStubFireIntent(t, func(intentName string, robot *vector.Vector) error {
++		return errors.New("rpc error: unavailable (flaky wifi)")
++	})
++
++	RecordPendingIntent(esn, "intent_explore_start")
++
++	// Must not panic.
++	FirePendingIntentAfterRelease(esn, nil)
++
++	if hasPendingIntent(esn) {
++		t.Fatalf("expected the entry to be consumed even when the fire errored")
++	}
++}
++
++// --- IsAllowedLLMIntent (whitelist check, split out of DoIntent) ---
++
++func TestIsAllowedLLMIntent_Whitelisted(t *testing.T) {
++	if !IsAllowedLLMIntent("intent_explore_start") {
++		t.Fatalf("expected intent_explore_start to be whitelisted")
++	}
++}
++
++func TestIsAllowedLLMIntent_NotWhitelisted(t *testing.T) {
++	if IsAllowedLLMIntent("intent_clock_settimer_extend") {
++		t.Fatalf("expected intent_clock_settimer_extend (a parameterized intent) to NOT be whitelisted for doIntent")
++	}
++}
++
++func TestIsAllowedLLMIntent_TrimsWhitespace(t *testing.T) {
++	if !IsAllowedLLMIntent("  intent_explore_start  ") {
++		t.Fatalf("expected whitespace to be trimmed before the whitelist check")
++	}
++}
+diff --git a/chipper/session-certs/placeholder b/chipper/session-certs/placeholder
+deleted file mode 100644
+index e69de29..0000000
