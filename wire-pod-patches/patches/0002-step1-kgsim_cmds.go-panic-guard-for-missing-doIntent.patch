@@ -1,0 +1,240 @@
+From 18c80146960f6b14667283e0f65686791054f2b1 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 02/10] step1: kgsim_cmds.go panic guard for missing doIntent
+ param
+
+---
+ chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go | 184 +++++++++++++++++-
+ chipper/pkg/wirepod/ttr/kgsim_cmds.go         |  12 +-
+ 2 files changed, 186 insertions(+), 10 deletions(-)
+
+diff --git a/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go b/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
+index 6f1737d..712761d 100644
+--- a/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
++++ b/chipper/pkg/wirepod/stt/vosk/Vosk_e2e_test.go
+@@ -49,9 +49,9 @@ import (
+ // real transport error).
+ type fakeIntentStream struct {
+ 	grpc.ServerStream
+-	chunks    [][]byte
+-	i         int
+-	afterErr  error
++	chunks   [][]byte
++	i        int
++	afterErr error
+ }
+ 
+ func (f *fakeIntentStream) Send(*pb.IntentResponse) error { return nil }
+@@ -72,12 +72,12 @@ func (f *fakeIntentStream) Recv() (*pb.StreamingIntentRequest, error) {
+ 	}, nil
+ }
+ 
+-func (f *fakeIntentStream) Context() context.Context           { return context.Background() }
+-func (f *fakeIntentStream) SetHeader(metadata.MD) error        { return nil }
+-func (f *fakeIntentStream) SendHeader(metadata.MD) error       { return nil }
+-func (f *fakeIntentStream) SetTrailer(metadata.MD)             {}
+-func (f *fakeIntentStream) SendMsg(m interface{}) error        { return nil }
+-func (f *fakeIntentStream) RecvMsg(m interface{}) error        { return nil }
++func (f *fakeIntentStream) Context() context.Context     { return context.Background() }
++func (f *fakeIntentStream) SetHeader(metadata.MD) error  { return nil }
++func (f *fakeIntentStream) SendHeader(metadata.MD) error { return nil }
++func (f *fakeIntentStream) SetTrailer(metadata.MD)       {}
++func (f *fakeIntentStream) SendMsg(m interface{}) error  { return nil }
++func (f *fakeIntentStream) RecvMsg(m interface{}) error  { return nil }
+ 
+ // chunkPCM splits raw PCM into 3200-byte (100ms @ 16kHz/16-bit/mono) pieces,
+ // matching the robot's documented chunk size (chipperpb.proto: "16k SR,
+@@ -239,3 +239,169 @@ func TestE2E_GenuineTransportError_StillReturnsPromptly(t *testing.T) {
+ 	}
+ 	t.Logf("genuine transport error case returned promptly: %v", err)
+ }
++
++// TestE2E_TwoStreamEndsInARow_ThenNormalRequestSucceeds is regression
++// coverage for the 2026-09-30 (Hermes) recognizer-leak fix in STT():
++// before that fix, the early "return \"\", err" path for a genuine
++// (non-EOF) stream error never released the recognizer back to the pool
++// (grmRecs/gpRecs[recind].InUse stayed true forever -- see STT()'s defer
++// releaseRec(...) call, added 2026-09-30). Two such failures in a row used
++// to leak two recognizers into the pool permanently; this asserts the
++// pool does NOT grow across repeated failures, and that a normal request
++// immediately afterward still succeeds promptly -- i.e. the failures
++// don't starve or hang later requests.
++func TestE2E_TwoStreamEndsInARow_ThenNormalRequestSucceeds(t *testing.T) {
++	e2eSetup(t)
++	pcm := e2eLoadTestPCM(t)
++	chunks := chunkPCM(pcm)
++	cut := len(chunks) / 3
++	if cut < 1 {
++		cut = 1
++	}
++
++	poolSizeBefore := len(gpRecs)
++
++	for i := 0; i < 2; i++ {
++		first := chunks[0]
++		rest := chunks[1:cut]
++		stream := &fakeIntentStream{chunks: rest, afterErr: errors.New("rpc error: code = Canceled desc = context canceled")}
++		req := newSpeechRequest(t, stream, first)
++		_, err := runSTTWithDeadline(t, req, 15*time.Second)
++		if err == nil {
++			t.Fatalf("iteration %d: expected a genuine (non-EOF) transport error to be returned", i)
++		}
++	}
++
++	if got := len(gpRecs); got != poolSizeBefore {
++		t.Fatalf("recognizer pool grew from %d to %d after two genuine-error requests -- recognizers are being leaked instead of released back to the pool", poolSizeBefore, got)
++	}
++
++	// A normal request right after must still succeed promptly -- this is
++	// exactly what "hangs the pool" would break.
++	first, rest := chunks[0], chunks[1:]
++	stream := &fakeIntentStream{chunks: rest}
++	req := newSpeechRequest(t, stream, first)
++	text, err := runSTTWithDeadline(t, req, 15*time.Second)
++	if err != nil {
++		t.Fatalf("normal request after two stream-end failures returned an error: %v", err)
++	}
++	if text == "" {
++		t.Fatalf("expected a non-empty transcript for the normal request after two stream-end failures")
++	}
++	t.Logf("post-failure normal transcript: %q", text)
++}
++
++// --- live-15 (2026-09-30, Hermes): hard max-utterance-cap coverage ---
++//
++// Bug B, scenario 2: the robot playing with its cube (motors running) so
++// trailing silence never arrives -- Vosk's VAD end-of-speech decision
++// (DetectEndOfSpeech) never fires because the utterance never goes quiet,
++// even though chunks keep arriving fine (so the per-chunk sttRequestTimeout
++// stall watchdog never fires either -- only the CONTENT never finalizes).
++// sttMaxUtterance (Vosk.go) is a hard, absolute 6.5s-from-stream-start cap
++// that force-finalizes with whatever's been accepted, independent of
++// per-chunk activity. This is the real e2e proof of that cap: continuous
++// real speech audio (no long pause), fed at a REAL-TIME pace (unlike the
++// other tests above, which feed as fast as Go can loop -- that matters
++// here because sttMaxUtterance is a WALL-CLOCK timer, not a frame count),
++// well past the 6.5s cap, and asserts STT() returns close to 6.5s (proving
++// the cap fired), not at the natural end of the audio (which would mean
++// the cap never engaged) and not near-instantly (which would mean VAD's
++// own end-of-speech decided early on this material, and the cap was never
++// exercised at all).
++
++// e2eLoadNoisePCM loads a real, locally-synthesized (espeak-ng) ~36s
++// continuous-speech WAV, converted to 16kHz/16-bit/mono PCM -- deliberately
++// scripted with no long pauses so end-of-speech should not fire on its own
++// well past sttMaxUtterance (6.5s). See live15-e2e-audio/ on gpu-host for
++// the generation commands (espeak-ng + ffmpeg). Skips (does not fail) if
++// not present, same pattern as e2eLoadTestPCM.
++func e2eLoadNoisePCM(t *testing.T) []byte {
++	t.Helper()
++	candidates := []string{"../../../../stttest_noise.pcm", "./stttest_noise.pcm", "../../../../../stttest_noise.pcm"}
++	for _, c := range candidates {
++		if b, err := os.ReadFile(c); err == nil {
++			return b
++		}
++	}
++	t.Skip("skipping: stttest_noise.pcm not found relative to test working directory -- see live15-e2e-audio/ on gpu-host to regenerate")
++	return nil
++}
++
++// pacedFakeIntentStream is fakeIntentStream but paces each chunk roughly
++// like real-time audio (100ms/chunk, matching the robot's documented
++// chunk size), because sttMaxUtterance is a wall-clock timer -- the other
++// (unpaced) fake stream above feeds its whole chunk slice as fast as Go
++// can loop, which would never let 6.5s of WALL-CLOCK time actually pass.
++type pacedFakeIntentStream struct {
++	grpc.ServerStream
++	chunks   [][]byte
++	i        int
++	afterErr error
++	delay    time.Duration
++}
++
++func (f *pacedFakeIntentStream) Send(*pb.IntentResponse) error { return nil }
++
++func (f *pacedFakeIntentStream) Recv() (*pb.StreamingIntentRequest, error) {
++	if f.i >= len(f.chunks) {
++		if f.afterErr == nil {
++			return nil, io.EOF
++		}
++		return nil, f.afterErr
++	}
++	time.Sleep(f.delay)
++	c := f.chunks[f.i]
++	f.i++
++	return &pb.StreamingIntentRequest{
++		Session:    "e2e-test",
++		DeviceId:   "e2e-test-esn",
++		InputAudio: c,
++	}, nil
++}
++
++func (f *pacedFakeIntentStream) Context() context.Context     { return context.Background() }
++func (f *pacedFakeIntentStream) SetHeader(metadata.MD) error  { return nil }
++func (f *pacedFakeIntentStream) SendHeader(metadata.MD) error { return nil }
++func (f *pacedFakeIntentStream) SetTrailer(metadata.MD)       {}
++func (f *pacedFakeIntentStream) SendMsg(m interface{}) error  { return nil }
++func (f *pacedFakeIntentStream) RecvMsg(m interface{}) error  { return nil }
++
++func TestE2E_ContinuousSpeechNoSilence_ForceFinalizesNearCap(t *testing.T) {
++	e2eSetup(t)
++	pcm := e2eLoadNoisePCM(t)
++	chunks := chunkPCM(pcm)
++	if len(chunks) < 2 {
++		t.Fatal("test audio too short to exercise the hard cap")
++	}
++	// Audio must run well past sttMaxUtterance (6.5s) so a cap failure
++	// (e.g. someone regresses it back to "wait for natural stream end")
++	// is unambiguous: len(chunks) * 100ms should clear ~10s+.
++	if len(chunks)*100 < 10000 {
++		t.Fatalf("test audio only ~%dms -- need well over 10s to distinguish the 6.5s cap from natural stream end", len(chunks)*100)
++	}
++	first, rest := chunks[0], chunks[1:]
++	stream := &pacedFakeIntentStream{chunks: rest, delay: 100 * time.Millisecond}
++	req := newSpeechRequest(t, stream, first)
++
++	start := time.Now()
++	text, err := runSTTWithDeadline(t, req, 20*time.Second)
++	elapsed := time.Since(start)
++
++	if err != nil {
++		t.Fatalf("STT() returned an error under continuous noise instead of force-finalizing: %v", err)
++	}
++	t.Logf("continuous-speech-no-silence: elapsed=%s transcript=%q", elapsed, text)
++
++	// The cap is 6.5s from stream start. Give generous scheduling slack on
++	// both sides: must not return suspiciously early (VAD deciding
++	// end-of-speech on its own -- the cap was never exercised) and must not
++	// run anywhere near the full ~36s of source audio (the cap failed to
++	// fire at all).
++	if elapsed < 5*time.Second {
++		t.Fatalf("returned after only %s -- too early to have exercised the 6.5s hard cap (VAD likely decided end-of-speech on its own; use longer/less-silent test audio)", elapsed)
++	}
++	if elapsed > 9*time.Second {
++		t.Fatalf("returned after %s -- the 6.5s hard cap did not fire (fell through toward natural stream end instead)", elapsed)
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_cmds.go b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+index f05d91d..86d3230 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim_cmds.go
++++ b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+@@ -289,7 +289,17 @@ func GetActionsFromString(input string) []RobotAction {
+ 
+ 		cmdPlusParam := strings.Split(strings.TrimSpace(strings.Split(spl, "}}")[0]), "||")
+ 		cmd := strings.TrimSpace(cmdPlusParam[0])
+-		param := strings.TrimSpace(cmdPlusParam[1])
++		// Crash fix 2026-09-29 (live-10, Hermes): a single-segment tag with no
++		// "||" (e.g. the LLM emitting {{intent_play_popawheelie}} instead of
++		// {{doIntent||intent_play_popawheelie}}) used to panic here with
++		// "index out of range [1] with length 1". Treat a missing param as
++		// empty instead -- CmdParamToAction safely no-ops (logs + Action:-1)
++		// for any cmd name it doesn't recognize, so this never panics and never
++		// silently performs the wrong action.
++		var param string
++		if len(cmdPlusParam) > 1 {
++			param = strings.TrimSpace(cmdPlusParam[1])
++		}
+ 		action := CmdParamToAction(cmd, param)
+ 		if action.Action != -1 {
+ 			actions = append(actions, action)

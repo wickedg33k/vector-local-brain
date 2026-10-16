@@ -2,6 +2,9 @@
 # Start the vector-brain proxy if it isn't already running.
 set -u
 BASE="${VECTOR_BRAIN_DIR:-$HOME/vector-brain}"
+# optional settings (see .env.example)
+if [ -f "$BASE/.env" ]; then set -a; . "$BASE/.env"; set +a; fi
+export VISION_MODEL="${VISION_MODEL:-gemma3:4b}"
 PIDFILE="$BASE/brain.pid"
 LOG="$BASE/start.log"
 

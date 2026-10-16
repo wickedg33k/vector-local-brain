@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Vector's nightly diary (2026-09-29, Hermes, "make Vector feel more human",
-item 6). Run by youruser's own crontab at 23:30 NY time (30 23 * * *) -- see
+item 6). Run by the service user's crontab at 23:30 NY time (30 23 * * *) -- see
 `crontab -l`. Writes a short first-person "my day" entry to
 20-agents/vector/diary.md, kept to the last MAX_DIARY_DAYS days.
 
@@ -12,8 +12,8 @@ semantic search without permanently eating into the always-on token
 budget (see rag.py's CONTEXT_TOKEN_CAP comment -- MEMORY.md alone already
 eats most of it).
 
-Runs as youruser (cron, no sudo, no docker) so vault file ownership stays
-youruser:youruser automatically -- no _fix_owner() trick needed here, unlike
+Runs as the service user (cron, no sudo, no docker) so vault file
+ownership stays correct automatically -- no _fix_owner() trick needed here, unlike
 curious.py which runs as root inside its container.
 
 Fails open throughout: any error skips writing tonight's entry (logged to
@@ -32,13 +32,15 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VAULT_VECTOR_DIR = os.environ.get("VECTOR_VAULT_AGENT_DIR", os.path.expanduser("~/obsidian-brain/20-agents/vector"))
+VAULT_VECTOR_DIR = os.path.join(
+    os.environ.get("VECTOR_VAULT_ROOT", os.path.expanduser("~/obsidian-brain")), "20-agents/vector"
+)
 DIARY_PATH = os.path.join(VAULT_VECTOR_DIR, "diary.md")
 MOOD_PATH = os.environ.get("VECTOR_MOOD_PATH", os.path.expanduser("~/vector-brain/mood.json"))
 NIGHT_OBS_PATH = os.path.join(VAULT_VECTOR_DIR, "night_observations.md")
 MEMORY_PATH = os.path.join(VAULT_VECTOR_DIR, "MEMORY.md")
-OLLAMA_BASE = "http://127.0.0.1:11434"
-LLM_MODEL = "qwen3:32b"
+OLLAMA_BASE = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+LLM_MODEL = "qwen3:30b-a3b-instruct-2507-q4_K_M"
 TIMEZONE_NAME = "America/New_York"
 MAX_DIARY_DAYS = 14
 MAX_CONVO_LINES_TO_MODEL = 40
@@ -66,7 +68,7 @@ def _todays_conversation_lines(now):
             text = f.read()
     except OSError:
         return []
-    lines = [l for l in text.splitlines() if l.startswith("- ") and "**the owner:**" in l]
+    lines = [l for l in text.splitlines() if l.startswith("- ") and ("**%s:**" % os.environ.get("VECTOR_OWNER_LOG_LABEL", "Owner")) in l]
     todays = []
     prev_minutes = now.hour * 60 + now.minute
     for line in reversed(lines):

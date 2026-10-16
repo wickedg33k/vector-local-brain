@@ -1,0 +1,392 @@
+From 66f5d5b31b3a46846c2a298b4c9bda8202d5676b Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 07/10] step5: eyes-only thinking animation (track-locked,
+ safety-fixed clip)
+
+---
+ chipper/pkg/wirepod/ttr/kgsim.go              |  14 ++
+ chipper/pkg/wirepod/ttr/matchIntentSend.go    |  11 ++
+ chipper/pkg/wirepod/ttr/thinkinganim.go       | 171 ++++++++++++++++++
+ chipper/pkg/wirepod/ttr/thinkinganim_test.go  |  90 +++++++++
+ .../ttr/thinkinganim_tracklock_test.go        |  40 ++++
+ 5 files changed, 326 insertions(+)
+ create mode 100644 chipper/pkg/wirepod/ttr/thinkinganim.go
+ create mode 100644 chipper/pkg/wirepod/ttr/thinkinganim_test.go
+ create mode 100644 chipper/pkg/wirepod/ttr/thinkinganim_tracklock_test.go
+
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 534f569..9110271 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -224,6 +224,13 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 	if err != nil {
+ 		return "", err
+ 	}
++	// live-16 step5 (2026-09-29 origin, live-13, Hermes): the thinking
++	// animation started back in matchIntentSend.go (non-KG classify path)
++	// is idempotent/nil-safe to stop even if it was never started (isKG=true
++	// callers never start one) -- deferred here so it can never outlive this
++	// turn however it exits (error return, or the normal path below which
++	// also stops it the instant real speech is about to start).
++	defer StopThinkingAnimation(esn)
+ 	if isKG {
+ 		BControl(robot, ctx, start, stop)
+ 		go func() {
+@@ -456,6 +463,13 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 				break
+ 			}
+ 		} else {
++			// live-16 step5: behavior control has just been granted (this
++			// loop only runs on a "start" signal) and the getin/TTS
++			// animations are about to play right below -- this is the exact
++			// moment real speech begins, so it's also the right moment to
++			// stop the thinking-animation loop started in
++			// matchIntentSend.go.
++			StopThinkingAnimation(esn)
+ 			time.Sleep(time.Millisecond * 300)
+ 		}
+ 		robot.Conn.PlayAnimation(
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index bd6dda4..ff76953 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -408,8 +408,19 @@ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent
+ 		// (CLASSIFY_MODEL env var, see classify.go) so its ~0.2-3s up-front
+ 		// cost no longer shares or evicts the main model's Ollama KV cache.
+ 		if vars.APIConfig.Knowledge.Enable && vars.APIConfig.Knowledge.LLMFirst {
++			// live-16 step5 (2026-09-29 origin, live-13, Hermes): visible
++			// "thinking" cue (eyes-only, track-locked -- see
++			// thinkinganim.go's header for the full safety incident this
++			// clip/flag choice fixes) starts the instant a turn is about to
++			// enter classify-then-LLM, and is stopped the moment either (a)
++			// the classifier wins below, or (b) real speech is about to
++			// start inside StreamingKGSimCtx (see kgsim.go) -- whose
++			// deferred StopThinkingAnimation also guarantees it can never
++			// outlive a turn that errors out instead.
++			StartThinkingAnimation(botSerial)
+ 			if intentName, ok := ClassifyCommandIntent(voiceText); ok {
+ 				logger.Println("Bot " + botSerial + " fast classifier matched " + intentName + " for '" + voiceText + "' - sending as voice intent result, skipping LLM chat")
++				StopThinkingAnimation(botSerial)
+ 				EndConversation(botSerial)
+ 				if isOpus {
+ 					ParamChecker(req, intentName, voiceText, botSerial)
+diff --git a/chipper/pkg/wirepod/ttr/thinkinganim.go b/chipper/pkg/wirepod/ttr/thinkinganim.go
+new file mode 100644
+index 0000000..b695fef
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/thinkinganim.go
+@@ -0,0 +1,171 @@
++package wirepod_ttr
++
++// thinkinganim.go -- added 2026-09-29 (live-13, Hermes) for wire-pod's
++// second live-13 goal: "a visible THINKING animation the moment the robot
++// has heard a request." Mirrors the KG (knowledge-graph) path's own
++// proven searching-animation loop in StreamingKGSimCtx (calls
++// robot.Conn.PlayAnimation directly, every 1/3s, with NO BehaviorControl
++// grab -- see kgsim.go's isKG loop, and DoPlayAnimationWI in
++// kgsim_cmds.go, which uses the same no-control-needed call shape for
++// {{playAnimationWI||...}}) instead of inventing a new mechanism.
++//
++// Investigated and rejected: changing the fast ack's intent name (see
++// kgsim.go's sendAck, "intent_greeting_hello") to some built-in "thinking"
++// intent instead. Vector's fixed firmware intent set has no such intent --
++// every built-in UserIntent name is either a specific command (explore,
++// charger, dance, ...) or a specific canned conversational reply
++// (greeting, blackjack, ...); there's nothing generic for "I heard you,
++// hang on." The KG path's own thinking cue
++// (anim_knowledgegraph_searching_01, looped via direct PlayAnimation
++// calls, no BehaviorControl) is the only proven "make the robot look like
++// it's thinking" mechanism already in this codebase, so this file
++// originally reused it verbatim for the non-KG intent path.
++//
++// --- 2026-09-29 SAFETY INCIDENT: SCOOTED OFF THE DESK (post-live-13) ---
++// The verbatim reuse above was wrong. anim_knowledgegraph_searching_01 has
++// body/wheel motion baked in. StartThinkingAnimation calls
++// robot.Conn.PlayAnimation with NO BehaviorControl grab of its own, but
++// ProcessTextAll's caller (the classify/LLM race, classifyrace.go) grabs
++// BehaviorControl at OVERRIDE_BEHAVIORS for the very same turn, and
++// vic-robot's firmware disables cliff-stop for the entire duration ANY
++// SDK client holds behavior control (confirmed in vector.log:
++// "ProxSensors.EnableStopOnCliff: 0" fires the instant control is
++// granted, "...: 1" fires the instant it's released -- this is automatic
++// firmware behavior tied to the BehaviorControl grant/release, not
++// something togglable independently; no such RPC exists in
++// vectorpb/messages.pb.go). With cliff-stop off, the looping animation's
++// wheel motion scooted the robot across the desk and off the edge.
++//
++// Fix (belt AND suspenders, both applied here):
++//   1. Swap the clip to anim_keepalive_eyesonly_loop_01 -- an eyes-only
++//      clip already used by the robot's own stock on-charger idle
++//      behavior (observed firing routinely in vector.log with zero
++//      wheel/lift activity), so it reads as "alive and attentive"
++//      without pretending to be the KG-specific "searching" cue.
++//   2. Set IgnoreBodyTrack and IgnoreLiftTrack on every
++//      PlayAnimationRequest this file sends (see
++//      vectorpb.PlayAnimationRequest.IgnoreBodyTrack /
++//      .IgnoreLiftTrack -- these exist in the vector-go-sdk protos and
++//      are honored by AnimationStreamer; the head track is left alone,
++//      so the "looking around" thinking cue still shows). This is the
++//      defense that survives even if the clip name is ever changed again
++//      by a future edit: whatever the named clip contains, its body and
++//      lift tracks are never sent to the motors.
++//
++// Started (via StartThinkingAnimation) the instant the transcript goes
++// final and ProcessTextAll is about to enter the classify/LLM race (see
++// raceClassifyAndLLM in classifyrace.go), stopped (via
++// StopThinkingAnimation) the instant either (a) the classifier wins and a
++// real voice intent is about to be sent, or (b) the LLM turn's behavior
++// control is granted and real speech is about to start (see the
++// StopThinkingAnimation call sites in classifyrace.go and kgsim.go's
++// StreamingKGSimCtx). A deferred StopThinkingAnimation in
++// StreamingKGSimCtx also guarantees it can never outlive a turn that
++// exits early/erroring.
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vectorpb"
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++)
++
++// thinkingAnimationName is the clip played on loop. Eyes-only (no
++// body/wheel/lift motion by design -- it's the same clip the robot's own
++// stock on-charger idle behavior already plays) -- see the 2026-09-29
++// safety incident note above for why this is no longer
++// anim_knowledgegraph_searching_01.
++const thinkingAnimationName = "anim_keepalive_eyesonly_loop_01"
++
++// thinkingAnimationInterval matches the isKG loop's own re-trigger cadence.
++const thinkingAnimationInterval = time.Second / 3
++
++var (
++	thinkingAnimMu    sync.Mutex
++	thinkingAnimStops = map[string]chan struct{}{}
++)
++
++// buildThinkingAnimationRequest builds the PlayAnimationRequest sent every
++// tick. Split out from the play() closure purely so a unit test can
++// assert the safety-critical track-lock flags without a real robot
++// connection: IgnoreBodyTrack and IgnoreLiftTrack MUST always be true, no
++// matter what thinkingAnimationName is set to, so a future clip swap (or
++// an animation asset that turns out to have stray body/lift keyframes
++// despite its name) can never re-introduce uncommanded wheel/lift motion
++// while behavior control -- and therefore cliff-stop -- may be
++// unavailable. IgnoreHeadTrack is deliberately left false: head motion is
++// how the "looking around, thinking" cue reads, and the head alone can't
++// drive the robot off an edge.
++func buildThinkingAnimationRequest() *vectorpb.PlayAnimationRequest {
++	return &vectorpb.PlayAnimationRequest{
++		Animation:       &vectorpb.Animation{Name: thinkingAnimationName},
++		Loops:           1,
++		IgnoreBodyTrack: true,
++		IgnoreLiftTrack: true,
++	}
++}
++
++// StartThinkingAnimation begins looping thinkingAnimationName on esn's
++// robot until StopThinkingAnimation(esn) is called. Safe to call
++// repeatedly -- a prior loop for the same esn is stopped first, so only
++// one loop per esn ever runs at a time. Connects to the robot itself (via
++// connectRobotByESN, the same helper conversation.go's
++// TriggerFollowUpListen uses) rather than requiring the caller to already
++// have a *vector.Vector, so it's callable from matchIntentSend.go's
++// ProcessTextAll with only an ESN in hand, well before StreamingKGSimCtx
++// opens its own separate robot connection for the same turn. Connection
++// or playback errors are logged and swallowed -- a missing animation must
++// never block or fail the actual turn.
++func StartThinkingAnimation(esn string) {
++	stop := make(chan struct{})
++
++	thinkingAnimMu.Lock()
++	if old, ok := thinkingAnimStops[esn]; ok {
++		close(old)
++	}
++	thinkingAnimStops[esn] = stop
++	thinkingAnimMu.Unlock()
++
++	go func() {
++		robot, err := connectRobotByESN(esn)
++		if err != nil {
++			logger.Println("thinking animation: failed to connect to robot " + esn + ": " + err.Error())
++			return
++		}
++		ctx := context.Background()
++		play := func() {
++			robot.Conn.PlayAnimation(ctx, buildThinkingAnimationRequest())
++		}
++		// Fire once immediately -- don't wait a full tick for the first
++		// play, since the whole point is "the moment the robot has heard
++		// a request."
++		play()
++		ticker := time.NewTicker(thinkingAnimationInterval)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-stop:
++				return
++			case <-ticker.C:
++				play()
++			}
++		}
++	}()
++}
++
++// StopThinkingAnimation stops esn's looping thinking animation, if one is
++// running. Nil-safe/idempotent: a no-op when nothing was ever started
++// (e.g. isKG=true callers, which never call StartThinkingAnimation at
++// all) or when it was already stopped -- safe to call from multiple
++// possible "real speech is starting now" points without coordinating
++// which one gets there first.
++func StopThinkingAnimation(esn string) {
++	thinkingAnimMu.Lock()
++	defer thinkingAnimMu.Unlock()
++	if stop, ok := thinkingAnimStops[esn]; ok {
++		close(stop)
++		delete(thinkingAnimStops, esn)
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/thinkinganim_test.go b/chipper/pkg/wirepod/ttr/thinkinganim_test.go
+new file mode 100644
+index 0000000..2141acd
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/thinkinganim_test.go
+@@ -0,0 +1,90 @@
++package wirepod_ttr
++
++import (
++	"testing"
++	"time"
++)
++
++// TestStartStopThinkingAnimation_Bookkeeping exercises the package-level
++// stop-channel map that Start/StopThinkingAnimation maintain, without a
++// real robot connection: connectRobotByESN fails fast (no matching ESN in
++// vars.BotInfo.Robots in a unit-test environment), so the loop goroutine
++// logs and returns almost immediately -- these assertions only cover the
++// synchronous bookkeeping (map insert/replace/delete), never actual
++// animation playback, which needs a real robot and is verified on-device
++// instead (see the live-13 deploy notes).
++func TestStartStopThinkingAnimation_Bookkeeping(t *testing.T) {
++	const esn = "test-esn-thinking-anim"
++
++	thinkingAnimMu.Lock()
++	delete(thinkingAnimStops, esn)
++	thinkingAnimMu.Unlock()
++
++	StartThinkingAnimation(esn)
++	thinkingAnimMu.Lock()
++	_, ok := thinkingAnimStops[esn]
++	thinkingAnimMu.Unlock()
++	if !ok {
++		t.Fatal("expected a stop channel to be registered for esn after StartThinkingAnimation")
++	}
++
++	// Starting a second time for the same esn must replace (and close,
++	// never leak) the old stop channel rather than erroring or panicking.
++	StartThinkingAnimation(esn)
++	thinkingAnimMu.Lock()
++	_, ok = thinkingAnimStops[esn]
++	thinkingAnimMu.Unlock()
++	if !ok {
++		t.Fatal("expected a stop channel to still be registered for esn after a second StartThinkingAnimation")
++	}
++
++	StopThinkingAnimation(esn)
++	thinkingAnimMu.Lock()
++	_, ok = thinkingAnimStops[esn]
++	thinkingAnimMu.Unlock()
++	if ok {
++		t.Fatal("expected esn's stop channel to be removed after StopThinkingAnimation")
++	}
++
++	// Idempotent: stopping again (nothing running) must not panic.
++	StopThinkingAnimation(esn)
++}
++
++// TestStopThinkingAnimation_NeverStarted_NoOp covers the common case where
++// StopThinkingAnimation is called defensively (e.g. StreamingKGSimCtx's
++// deferred call, or the isKG=true path) for an esn that never had
++// StartThinkingAnimation called at all -- must be a silent no-op, never a
++// panic.
++func TestStopThinkingAnimation_NeverStarted_NoOp(t *testing.T) {
++	StopThinkingAnimation("esn-that-never-started-thinking")
++}
++
++// TestStartThinkingAnimation_StopChannelActuallyCloses confirms the
++// channel StopThinkingAnimation removes from the map is the SAME one that
++// gets closed (so a loop goroutine still holding it -- as the real
++// PlayAnimation loop does -- would actually observe the stop signal),
++// by registering our own listener in the channel's place is not directly
++// observable from outside, so instead we assert closing behavior via the
++// exported functions' effect on a channel we retrieve mid-flight.
++func TestStartThinkingAnimation_StopChannelActuallyCloses(t *testing.T) {
++	const esn = "test-esn-thinking-anim-close"
++
++	StartThinkingAnimation(esn)
++	thinkingAnimMu.Lock()
++	stop, ok := thinkingAnimStops[esn]
++	thinkingAnimMu.Unlock()
++	if !ok {
++		t.Fatal("expected a stop channel after StartThinkingAnimation")
++	}
++
++	StopThinkingAnimation(esn)
++
++	select {
++	case _, open := <-stop:
++		if open {
++			t.Fatal("expected the stop channel to be closed, got an open receive")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("stop channel was never closed within 1s")
++	}
++}
+diff --git a/chipper/pkg/wirepod/ttr/thinkinganim_tracklock_test.go b/chipper/pkg/wirepod/ttr/thinkinganim_tracklock_test.go
+new file mode 100644
+index 0000000..e3301a9
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/thinkinganim_tracklock_test.go
+@@ -0,0 +1,40 @@
++package wirepod_ttr
++
++import "testing"
++
++// TestBuildThinkingAnimationRequest_TrackLocksSafe is the safety-critical
++// regression test for the 2026-09-29 "drove off the desk" incident: the
++// thinking-animation request must NEVER let body or lift motion reach the
++// motors, because behavior control (and therefore firmware cliff-stop)
++// may be held by another party for the whole duration this plays. Head
++// motion is fine and expected (the "looking around" cue), so
++// IgnoreHeadTrack must stay false.
++func TestBuildThinkingAnimationRequest_TrackLocksSafe(t *testing.T) {
++	req := buildThinkingAnimationRequest()
++
++	if !req.GetIgnoreBodyTrack() {
++		t.Fatal("SAFETY: thinking animation request must set IgnoreBodyTrack=true -- body/wheel motion must never play while cliff-stop may be disabled")
++	}
++	if !req.GetIgnoreLiftTrack() {
++		t.Fatal("SAFETY: thinking animation request must set IgnoreLiftTrack=true")
++	}
++	if req.GetIgnoreHeadTrack() {
++		t.Fatal("expected IgnoreHeadTrack=false -- head motion is the intended thinking cue")
++	}
++	if req.GetAnimation().GetName() != thinkingAnimationName {
++		t.Fatalf("expected animation name %q, got %q", thinkingAnimationName, req.GetAnimation().GetName())
++	}
++	if req.GetLoops() != 1 {
++		t.Fatalf("expected Loops=1, got %d", req.GetLoops())
++	}
++}
++
++// TestThinkingAnimationName_NotTheOldWheeledClip pins the clip choice so a
++// future edit can't silently revert to the animation that caused the
++// 2026-09-29 incident without a test failure forcing a second look.
++func TestThinkingAnimationName_NotTheOldWheeledClip(t *testing.T) {
++	const oldUnsafeClip = "anim_knowledgegraph_searching_01"
++	if thinkingAnimationName == oldUnsafeClip {
++		t.Fatalf("thinkingAnimationName reverted to the clip implicated in the 2026-09-29 off-the-desk incident (%s) -- see thinkinganim.go's header before changing this back", oldUnsafeClip)
++	}
++}

@@ -1,0 +1,135 @@
+[
+  {
+    "name": "play_music_custom",
+    "description": "Play a song on request via yt-dlp",
+    "utterances": [
+      "play music",
+      "play some music",
+      "play the song",
+      "play a song",
+      "play me a song",
+      "play me some music",
+      "play song",
+      "play my"
+    ],
+    "intent": "intent_greeting_hello",
+    "params": {
+      "paramname": "",
+      "paramvalue": ""
+    },
+    "exec": "/opt/vector-music/play.py",
+    "execargs": [
+      "!speechText"
+    ],
+    "issystem": false,
+    "luascript": ""
+  },
+  {
+    "name": "stop_music_custom",
+    "description": "Stop the currently playing music",
+    "utterances": [
+      "stop the music",
+      "stop music",
+      "stop playing",
+      "shut up",
+      "party's over",
+      "that's enough",
+      "enough music",
+      "turn it off",
+      "silence"
+    ],
+    "intent": "intent_greeting_hello",
+    "params": {
+      "paramname": "",
+      "paramvalue": ""
+    },
+    "exec": "/opt/vector-music/stop.sh",
+    "execargs": [],
+    "issystem": false,
+    "luascript": ""
+  },
+  {
+    "name": "dance_music_custom",
+    "description": "Start a random upbeat song and dance (or hint that plain dance-while-playing needs a phrase)",
+    "utterances": [
+      "dance party",
+      "dance to the music",
+      "dance to music",
+      "lets dance",
+      "let us dance",
+      "time to dance",
+      "let's dance",
+      "lets dance to",
+      "let's dance to",
+      "dance to",
+      "dance with me to",
+      "play and dance"
+    ],
+    "intent": "intent_greeting_hello",
+    "params": {
+      "paramname": "",
+      "paramvalue": ""
+    },
+    "exec": "/opt/vector-music/play.py",
+    "execargs": [
+      "!speechText"
+    ],
+    "issystem": false,
+    "luascript": ""
+  },
+  {
+    "name": "sentry_cmd_custom",
+    "description": "Force sentry mode on/off/auto by voice (also matches the common \"century\" mishearing) -- handled in Go (sentrycmd.go), not exec",
+    "utterances": [
+      "sentry mode off",
+      "stop sentry",
+      "sentry off",
+      "century mode off",
+      "stop century",
+      "century off",
+      "sentry mode on",
+      "turn on sentry",
+      "sentry on",
+      "start sentry",
+      "century mode on",
+      "turn on century",
+      "century on",
+      "start century",
+      "sentry mode auto",
+      "sentry automatic",
+      "sentry auto",
+      "century mode auto",
+      "century automatic",
+      "century auto"
+    ],
+    "intent": "intent_system_noaudio",
+    "params": {
+      "paramname": "",
+      "paramvalue": ""
+    },
+    "exec": "",
+    "execargs": [],
+    "issystem": false,
+    "luascript": ""
+  },
+  {
+    "name": "end_conversation_custom",
+    "description": "End conversation mode immediately on a kill phrase, short spoken goodbye, no LLM call -- handled in Go (endconversationcmd.go), not exec",
+    "utterances": [
+      "end conversation vector",
+      "end conversation",
+      "that's all vector",
+      "thats all vector",
+      "goodbye vector"
+    ],
+    "intent": "intent_system_noaudio",
+    "params": {
+      "paramname": "",
+      "paramvalue": ""
+    },
+    "exec": "",
+    "execargs": [],
+    "issystem": false,
+    "luascript": ""
+  }
+]

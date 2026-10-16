@@ -1,0 +1,34 @@
+From efc6e260ed7729e9ae3fb6d62beacd1467971a93 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 06/10] step4 test: add classify timing/routing to e2e LLM
+ timing gate
+
+---
+ chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go b/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
+index 3ab2e9a..471540d 100644
+--- a/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
++++ b/chipper/pkg/wirepod/ttr/e2e_llm_timing_test.go
+@@ -67,6 +67,19 @@ func TestE2E_LLMTurnTiming(t *testing.T) {
+ 	for _, p := range e2eLLMPhrases {
+ 		p := p
+ 		t.Run(p, func(t *testing.T) {
++			// live-16 step4: classify runs SERIALLY first now, exactly as
++			// production does (matchIntentSend.go's ProcessTextAll) -- a
++			// confident match means the turn is answered as a voice intent
++			// and the LLM is never called at all, so time this the same way
++			// a real turn would experience it.
++			classifyStart := time.Now()
++			intentName, ok := ClassifyCommandIntent(p)
++			classifyElapsed := time.Since(classifyStart)
++			if ok {
++				t.Logf("%q: classifier matched %q in %s -- answered as voice intent, LLM skipped", p, intentName, classifyElapsed)
++				return
++			}
++			t.Logf("%q: classifier -> NONE in %s -- falling through to LLM", p, classifyElapsed)
+ 			runLLMTimingCase(t, p)
+ 		})
+ 	}

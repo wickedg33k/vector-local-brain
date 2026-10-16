@@ -1,0 +1,7 @@
+{
+  "service_url": "http://127.0.0.1:8096",
+  "robot_serial": "YOUR_ESN",
+  "wirepod_api_base": "http://127.0.0.1:8080",
+  "lock_file": "/srv/vector/vector-pod/data/robot_control.lock",
+  "container": "vector-faces"
+}

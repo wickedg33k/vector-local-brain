@@ -4,7 +4,7 @@ Curious Vector -- occasional camera snapshot + local-vision description +
 playful LLM question, spoken by Vector.
 
 Runs as its own long-lived daemon inside the `vector-curious` container on
-gpu-host (never on the LAN's other shared hosts -- the owner's rule). It polls roughly every
+the GPU host (never on other shared hosts -- the owner's rule). It polls roughly every
 POLL_INTERVAL_SECONDS, and only does anything (SDK connect, camera, vision,
 LLM, speak) when it decides Vector is idle, out of quiet hours, not
 disabled, and it's been long enough (randomized 20-30 min) since the last
@@ -265,15 +265,29 @@ AppIntents are silently dropped by vic-engine, reproduced 2026-09-29
     completed real SDK moves" is only ever logged when moves actually
     completed (capture_image() returns wandered=True iff
     _do_safe_wander() reports at least one successful move).
+
+REWORK 2026-10-15 (hermes, the owner: "when he is not talked to, once an hour
+he will explore, talking to himself"): the every-~2-min announce ->
+snapshot -> question -> 20 s mic cycle is OFF by default
+(curious_question_cycle_enabled). By day: a SILENT face-check snapshot
+keeps face recognition / current_people.json / greetings working, and an
+hourly, idle-gated explore session drives around (leashed, cliff-guarded),
+mutters self-talk, greets recognised people with a getting-to-know-you
+question and learns per-person notes. See the HOURLY EXPLORE MODE block
+above main(). Test trigger: touch data/explore_now or GET :8790/explore_now.
 """
 import base64
 import concurrent.futures
+import http.server
 import difflib
+import fcntl
 import json
 import logging
+import math
 import os
 import random
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -289,11 +303,10 @@ except ImportError:  # pragma: no cover - py3.10 slim always has zoneinfo
     ZoneInfo = None
 
 APP_DIR = "/app"
-CONFIG_PATH = os.path.join(APP_DIR, "config.json")
-# The name Vector speaks aloud when addressing its owner (TTS output,
-# and the safety-check that guards against the LLM using a wrong name).
-# Set this to your own name.
+# Name the robot uses when addressing its owner (spoken questions, fallback
+# template, fact extraction). Set VECTOR_OWNER_NAME in the container env.
 OWNER_NAME = os.environ.get("VECTOR_OWNER_NAME", "friend")
+CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 STATE_PATH = os.path.join(APP_DIR, "state.json")
 DISABLED_PATH = os.path.join(APP_DIR, "DISABLED")
 LOG_PATH = os.path.join(APP_DIR, "curious.log")
@@ -310,6 +323,74 @@ IDLE_POLL_LADDER = (60, 120, 300)
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 2
 CIRCUIT_BREAKER_PAUSE_SECONDS = 600  # 10 minutes
 
+# Only one anki_vector SDK connection to the robot anywhere in this
+# process at a time (see SENTRY MODE section below) -- capture_image(),
+# capture_night_images(), drive_home_sdk(), and sentry's own
+# _sentry_capture_and_detect() all acquire this before connecting and
+# release it in their `finally`.
+# Cross-process robot-control lock (2026-10-15, hermes, vector-faces): the
+# threading lock only serialises THIS daemon's own SDK connections.
+# vector-daycycle (host cron) and vector-faces' enroll.py take an exclusive
+# fcntl.flock on ~/vector-pod/data/robot_control.lock (bind-mounted
+# here at /mnt/robot_control.lock) for their robot-control windows.
+# _SDK_LOCK now takes that flock too (non-blocking, polled within the same
+# timeout), so curious never grabs the robot mid-enrollment. Fails open
+# (in-process lock only, exactly the old behaviour) if the file isn't
+# mounted. Same acquire(timeout=)/release() interface as threading.Lock.
+ROBOT_CONTROL_LOCK_PATH = "/mnt/robot_control.lock"
+
+
+class _RobotControlLock:
+    def __init__(self, path):
+        self._tlock = threading.Lock()
+        self._path = path
+        self._fh = None
+        self._warned = False
+
+    def _warn_once(self, msg):
+        if not self._warned:
+            self._warned = True
+            log.warning("robot_control.lock: %s -- using in-process lock only", msg)
+
+    def acquire(self, timeout=3):
+        deadline = time.time() + max(0.0, timeout)
+        if not self._tlock.acquire(timeout=max(0.0, timeout)):
+            return False
+        try:
+            fh = open(self._path, "r+")  # never create: missing mount -> fail open
+        except OSError as e:
+            self._warn_once("not available (%s)" % e)
+            return True
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._fh = fh
+                return True
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    fh.close()
+                    self._tlock.release()
+                    log.info("robot_control.lock held by another process (enroll.py/daycycle)")
+                    return False
+                time.sleep(0.25)
+            except OSError as e:
+                fh.close()
+                self._warn_once("flock failed (%s)" % e)
+                return True
+
+    def release(self):
+        fh, self._fh = self._fh, None
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+        self._tlock.release()
+
+
+_SDK_LOCK = _RobotControlLock(ROBOT_CONTROL_LOCK_PATH)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -322,7 +403,7 @@ _last_skip_log = {}  # reason -> last logged epoch, for dedup
 
 
 def _fix_owner(path):
-    """Container runs as root; keep vault files owned by youruser (1000) so host-side writers keep working."""
+    """Container runs as root; keep vault files owned by the host user (uid 1000) so host-side writers keep working."""
     try:
         os.chown(path, 1000, 1000)
     except Exception as e:
@@ -349,11 +430,29 @@ def load_state():
         return {"next_eligible_at": 0, "last_trigger_at": 0}
 
 
+_state_write_lock = threading.Lock()
+
+
 def save_state(state):
-    tmp = STATE_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(state, f)
-    os.replace(tmp, STATE_PATH)
+    # 2026-09-29 cliffsafe: adding safety_log_watch_loop as a THIRD
+    # concurrent caller (alongside sentry_log_watch_loop and
+    # presence_poll_loop/the main cycle) exposed a pre-existing race --
+    # every caller wrote the SAME shared tmp path (STATE_PATH + ".tmp"),
+    # so one thread's os.replace() could fire after another thread had
+    # already renamed that same tmp file away, raising
+    # FileNotFoundError. Fixed two ways: (1) each call now writes to a
+    # tmp path unique to this process+thread, so concurrent writers never
+    # touch the same tmp file, and (2) a module lock serializes the
+    # write+replace pair so two threads' saves can't interleave into a
+    # lost-update (last save_state() to acquire the lock always reflects
+    # a load_state() that happened after the previous save_state()
+    # released it, for callers that follow the standard
+    # load-mutate-save pattern used throughout this file).
+    tmp = f"{STATE_PATH}.tmp.{os.getpid()}.{threading.get_ident()}"
+    with _state_write_lock:
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, STATE_PATH)
 
 
 def in_quiet_hours(cfg, now=None):
@@ -388,7 +487,7 @@ def _local_time_reached(cfg, now, hhmm):
 
 
 SPAWN_RE = re.compile(r"spawned worker pid=(\d+)")
-DONE_RE = re.compile(r"stream_wav_file complete|queue done|playback_error=")
+DONE_RE = re.compile(r"stream_wav_file complete|queue done|playback_error=|stop\.sh: killing worker")
 
 
 def music_playing(cfg):
@@ -832,7 +931,7 @@ def _do_safe_wander(cfg, robot):
 # @behavior.findfaceduration) with no face id or name attached. Named
 # faces are only available via the SDK's robot.world.visible_faces (Face
 # objects, .name is "" until the owner enrolls one by saying "Hey Vector, my
-# name is <your name>" while facing the robot). So this piggybacks on
+# name is <name>" while facing the robot). So this piggybacks on
 # capture_image()'s EXISTING connection (enable_face_detection=True there,
 # see its docstring) instead of adding a new frequent SDK-connect path.
 FACE_STATE_KEY = "face_last_seen"              # name -> epoch last seen
@@ -844,13 +943,26 @@ GREETING_TEMPLATES_MORNING = ["Morning, {name}.", "Morning, {name}!"]
 GREETING_TEMPLATES_GENERIC = ["Hey, {name}!", "Oh -- hey {name}.", "{name}! Good to see you."]
 
 
-def record_face_sightings(cfg, state, faces):
+def record_face_sightings(cfg, state, faces, source="robot"):
     """Bookkeeping only -- never speaks (see maybe_greet_faces for that).
+
+    2026-10-15 (hermes, vector-faces): names now come from OUR local face
+    service by default (cfg face_source="local"): capture-path calls with
+    source="robot" (the robot's built-in face store) then only count as
+    "a face was seen" -- their names are ignored. face_source="robot"
+    restores the old behaviour; "both" accepts names from either.
     Called from inside capture_image() right after its connection reads
     robot.world.visible_faces, regardless of that cycle's outcome. Logs
     plainly so the owner/curious.log show exactly what's needed: if only
     unnamed faces ever show up, no face is enrolled yet."""
     if not faces:
+        return
+    face_source = cfg.get("face_source", "local")
+    if source == "robot" and face_source == "local":
+        state[FACE_ANY_SEEN_KEY] = time.time()
+        save_state(state)
+        return
+    if source == "local" and face_source == "robot":
         return
     now = time.time()
     state[FACE_ANY_SEEN_KEY] = now
@@ -865,11 +977,93 @@ def record_face_sightings(cfg, state, faces):
         state[FACE_UNNAMED_SEEN_KEY] = state.get(FACE_UNNAMED_SEEN_KEY, 0) + len(unnamed)
         log.info(
             "faces: saw %d unrecognized/unenrolled face(s) (no name available) -- "
-            "the owner needs to say \"Hey Vector, my name is <your name>\" (facing the robot) "
-            "to enroll a face before name-based greetings can fire for him",
+            "enroll with ~/vector-faces/enroll.py --name \"<Name>\"",
             len(unnamed),
         )
     save_state(state)
+
+
+# ---- Local household face recognition (2026-10-15, hermes, vector-faces).
+# Each successful day capture is POSTed to the LOCAL vector-faces service
+# (YuNet + SFace on this host, 127.0.0.1:8096 -- nothing leaves the box).
+# Recognised names feed record_face_sightings() (so maybe_greet_faces greets
+# with OUR names) and /mnt/vector-faces/current_people.json, which the brain
+# proxy turns into "People you can currently see: ...". Service down ->
+# None -> no names this cycle, everything else in the cycle unaffected.
+def recognize_faces_local(cfg, image_path):
+    if cfg.get("face_source", "local") == "robot":
+        return None
+    url = cfg.get("face_local_url", "http://127.0.0.1:8096/recognize")
+    try:
+        with open(image_path, "rb") as f:
+            data = f.read()
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "image/jpeg")
+        with urllib.request.urlopen(req, timeout=cfg.get("face_local_timeout_seconds", 6)) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(res, list):
+            raise ValueError("unexpected response %r" % (res,))
+        return res
+    except Exception as e:
+        log_skip("vector-faces unavailable (%s: %s) -- no local face names this cycle"
+                 % (type(e).__name__, e), cfg.get("log_dedup_seconds", 900))
+        return None
+
+
+def write_current_people(cfg, results, now):
+    """[{name, score, last_seen_epoch}] for recognised (non-unknown) people,
+    merged with entries seen in the last face_current_keep_seconds. Atomic,
+    owned by whoever owns the directory (the host user), mode 0640."""
+    path = cfg.get("face_current_people_path", "/mnt/vector-faces/current_people.json")
+    d = os.path.dirname(path)
+    if not os.path.isdir(d):
+        return
+    keep_s = cfg.get("face_current_keep_seconds", 600)
+    people = {}
+    try:
+        with open(path) as f:
+            prev = json.load(f)
+        for p in prev if isinstance(prev, list) else []:
+            if isinstance(p, dict) and p.get("name") and now - float(p.get("last_seen_epoch", 0)) <= keep_s:
+                people[p["name"]] = p
+    except Exception:
+        pass
+    for r in results:
+        name = (r.get("name") or "").strip()
+        if name and name != "unknown":
+            people[name] = {"name": name, "score": round(float(r.get("score") or 0), 3),
+                            "last_seen_epoch": int(now)}
+    out = sorted(people.values(), key=lambda p: -p["last_seen_epoch"])
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".current_people.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(out, f)
+        st = os.stat(d)
+        try:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def local_faces_after_capture(cfg, state, image_path):
+    results = recognize_faces_local(cfg, image_path)
+    if results is None:
+        return
+    now = time.time()
+    write_current_people(cfg, results, now)
+    if results:
+        log.info("faces(local): %s", [(r.get("name"), r.get("score")) for r in results])
+    faces = [{"name": "" if (r.get("name") or "unknown") == "unknown" else r["name"],
+              "face_id": None} for r in results]
+    record_face_sightings(cfg, state, faces, source="local")
 
 
 def _greeting_text(name, local_hour):
@@ -935,7 +1129,7 @@ def _generate_proactive_line(cfg):
     remark. Uses the proxy (not Ollama directly) so the line automatically
     carries the same persona/mood/same-day-memory context wire-pod's own
     turns get -- no separate prompt-building here. x_vector_internal=True
-    tells the proxy this isn't a real the owner turn, so it doesn't get
+    tells the proxy this isn't a real owner turn, so it doesn't get
     counted as a voice interaction for mood purposes (see server.py's
     _inject_context). Returns None on any failure -- a proactive remark is
     a nice-to-have, never worth retrying or blocking on."""
@@ -1070,6 +1264,10 @@ def capture_image(cfg, state, do_wander=False):
         log.info("capture_image: voice activity immediately before grab -- skipping (fail closed)")
         return None, "skip", "voice activity immediately before grab", False
 
+    if not _SDK_LOCK.acquire(timeout=cfg.get("sdk_lock_wait_seconds", 3)):
+        log.info("capture_image: SDK busy elsewhere (lock held) -- skipping, will retry next cycle")
+        return None, "skip", "sdk lock busy", False
+
     robot = anki_vector.Robot(
         serial=cfg["robot_serial"],
         behavior_control_level=ControlPriorityLevel.DEFAULT_PRIORITY,
@@ -1164,6 +1362,7 @@ def capture_image(cfg, state, do_wander=False):
             robot.disconnect()
         except Exception:
             pass
+        _SDK_LOCK.release()
 
 
 def capture_night_images(cfg, state):
@@ -1190,6 +1389,10 @@ def capture_night_images(cfg, state):
     if voice_recently_active(cfg, state):
         log.info("capture_night_images: voice activity immediately before grab -- skipping (fail closed)")
         return [], "skip", "voice activity immediately before grab"
+
+    if not _SDK_LOCK.acquire(timeout=cfg.get("sdk_lock_wait_seconds", 3)):
+        log.info("capture_night_images: SDK busy elsewhere (lock held) -- skipping, will retry next cycle")
+        return [], "skip", "sdk lock busy"
 
     robot = anki_vector.Robot(
         serial=cfg["robot_serial"],
@@ -1267,6 +1470,7 @@ def capture_night_images(cfg, state):
             robot.disconnect()
         except Exception:
             pass
+        _SDK_LOCK.release()
 
 
 NOTHING_MARKERS = ("nothing_notable", "nothing notable")
@@ -1322,7 +1526,28 @@ def vision_describe(cfg, image_path):
     (name, text_read_or_None, where_or_None) tuples -- empty if nothing
     labeled/readable was seen, even when description is non-None."""
     with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
+        raw = f.read()
+    # brighten (2026-10-15): Vector's auto-exposure is already pinned at max
+    # (66 ms, gain 3.8), so indoor frames are underexposed. Auto-level dark
+    # frames with the shared /mnt/vector-brain/brighten.py (same code the
+    # brain proxy uses). Only the copy sent to the model changes; the saved
+    # file is untouched. Any error -> original image.
+    try:
+        if "/mnt/vector-brain" not in sys.path:
+            sys.path.append("/mnt/vector-brain")
+        from brighten import brighten_jpeg
+        new, binfo = brighten_jpeg(raw)
+        if new:
+            log.info("image brightened: mean %s->%s (p50 %s->%s, p95 %s->%s, gamma %s)",
+                     binfo.get("mean_before"), binfo.get("mean_after"),
+                     binfo.get("p50_before"), binfo.get("p50_after"),
+                     binfo.get("p95_before"), binfo.get("p95_after"), binfo.get("gamma"))
+            raw = new
+        else:
+            log.info("image brighten skipped: %s", binfo)
+    except Exception as e:
+        log.warning("image brighten failed, using original: %s", e)
+    b64 = base64.b64encode(raw).decode("ascii")
     prompt = (
         "You are looking through a robot's camera. You CAN read text -- "
         "always read any visible text, brand names, model names and labels "
@@ -1338,10 +1563,10 @@ def vision_describe(cfg, image_path):
         "guessing at a specific item -- never guess something as specific "
         "as 'couch' or 'television' unless you can clearly see that's what "
         "it is.\n"
-        "If the room is dark, dim, poorly lit, or the image is blurry or "
-        "unclear, say so plainly at the start of DESCRIPTION (e.g. 'Dim "
-        "and hard to see:') and list fewer OBJECTS lines -- or none -- "
-        "rather than guessing at what's there.\n\n"
+        "Describe what is actually visible (the image is already brightened). "
+        "Mention lighting ONLY if the scene is truly too dark to make anything "
+        "out -- then start DESCRIPTION with 'Too dark to see:' and list no "
+        "OBJECTS. Otherwise don't comment on lighting or image quality.\n\n"
         "If there is a person, briefly describe them in DESCRIPTION "
         "(clothing/pose/expression) without guessing who they are, and do "
         "not give the person their own OBJECTS line.\n"
@@ -1379,7 +1604,7 @@ def vision_describe(cfg, image_path):
 # describe with confidence. Also treated as low-confidence: a description
 # with zero OBJECTS lines -- nothing to genuinely ask about.
 LOW_CONFIDENCE_MARKERS = (
-    "dark", "dim", "unclear", "blurry", "blurred", "hard to see",
+    "too dim", "unclear", "blurry", "blurred", "hard to see",  # not bare "dark"/"dim": "a dark desk" is fine
     "difficult to see", "can't see", "cannot see", "hard to make out",
     "difficult to make out", "not clear", "low light", "poorly lit",
     "obscured", "too dark",
@@ -1403,11 +1628,15 @@ def _is_low_confidence_scene(description, objects):
 
 
 # Names other than the owner that must never appear in a spoken question --
-# the owner is the only person Vector is ever actually talking to (FAMILY_A and
-# FAMILY_B are the owner's kids but aren't present). This is a safety net behind
+# the owner is the only person Vector is ever actually talking to (other household members can be listed in
+# VECTOR_DISALLOWED_NAMES when they aren't usually present). This is a safety net behind
 # the system prompt below, in case persona/RAG context added by the brain
 # proxy leaks a name in anyway.
-_DISALLOWED_NAMES = ("family_a", "family_b")
+_DISALLOWED_NAMES = tuple(
+    n.strip().lower()
+    for n in os.environ.get("VECTOR_DISALLOWED_NAMES", "").split(",")
+    if n.strip()
+)
 _MAX_QUESTION_WORDS = 20
 
 
@@ -1747,6 +1976,10 @@ def drive_home_sdk(cfg, state):
         log.info("drive_home_sdk: voice activity immediately before grab -- skipping (fail closed)")
         return False, "skip"
 
+    if not _SDK_LOCK.acquire(timeout=cfg.get("sdk_lock_wait_seconds", 3)):
+        log.info("drive_home_sdk: SDK busy elsewhere (lock held) -- skipping, will retry next eligible poll")
+        return False, "skip"
+
     robot = anki_vector.Robot(
         serial=cfg["robot_serial"],
         behavior_control_level=ControlPriorityLevel.OVERRIDE_BEHAVIORS_PRIORITY,
@@ -1795,6 +2028,7 @@ def drive_home_sdk(cfg, state):
             robot.disconnect()
         except Exception:
             pass
+        _SDK_LOCK.release()
 
 
 def trigger_go_home(cfg, state):
@@ -2008,14 +2242,13 @@ def extract_taught_fact(cfg, question, answer):
     return text
 
 
-def append_taught_fact(cfg, fact):
+def append_taught_fact(cfg, fact, heading="## Things the owner taught me"):
     """Append a fact the owner taught Vector under '## Things the owner taught
     me' in MEMORY.md, creating that section if it doesn't exist yet.
     Dedupes (substring + fuzzy) against everything already under that
     heading. Atomic write (temp file + os.replace); never touches any
     other section. Returns True if a new line was written."""
     path = cfg.get("vector_memory_path")
-    heading = "## Things the owner taught me"
     if not path or not fact:
         return False
 
@@ -2369,6 +2602,12 @@ def run_cycle(cfg):
         else:
             log_skip("quiet hours", cfg.get("log_dedup_seconds", 900))
             did_something = False
+        if explore_trigger_pending(cfg) is not None:
+            _consume_explore_trigger(cfg, "quiet hours -- not exploring at night")
+        try:
+            sent_home = maybe_explore_return(cfg, state, now, voice_busy) or sent_home
+        except Exception as e:
+            log.warning("maybe_explore_return failed (non-fatal): %s", e)
         return bool(voice_busy or did_something or sent_home)
 
     # Evening pre-dark return (REWORK 2026-09-29b): once local clock hits
@@ -2384,7 +2623,21 @@ def run_cycle(cfg):
             cfg, state, now, voice_busy, "evening pre-dark return"
         )
 
-    did_something = run_day_cycle(cfg, state, now, voice_busy)
+    # 2026-10-15 hourly explore (see HOURLY EXPLORE MODE block). Order:
+    # finish any explore go-home, then the hourly explore session, else the
+    # silent face check (or the legacy question cycle if re-enabled).
+    explored = False
+    try:
+        sent_evening_home = maybe_explore_return(cfg, state, now, voice_busy) or sent_evening_home
+        explored = maybe_run_explore(cfg, state, now, voice_busy)
+    except Exception as e:
+        log.exception("explore scheduler failed (non-fatal): %s", e)
+    if explored:
+        did_something = True
+    elif cfg.get("curious_question_cycle_enabled", False):
+        did_something = run_day_cycle(cfg, state, now, voice_busy)
+    else:
+        did_something = run_face_check_cycle(cfg, state, now, voice_busy)
     remarked = False
     if not did_something:
         # Only consider a proactive remark on a poll where the normal
@@ -2502,6 +2755,11 @@ def run_day_cycle(cfg, state, now, voice_busy):
         state["go_home_next_try_at"] = 0
         save_state(state)
         log.info("day: wander folded into this capture cycle -- completed real SDK moves (not a cloud_intent no-op)")
+    if outcome == "ok" and image_path:
+        try:
+            local_faces_after_capture(cfg, state, image_path)
+        except Exception as e:
+            log.warning("local face recognition failed (non-fatal): %s", e)
     try:
         maybe_greet_faces(cfg, state, now, voice_busy)
     except Exception as e:
@@ -2603,6 +2861,2105 @@ def run_day_cycle(cfg, state, now, voice_busy):
     return True
 
 
+# ---------------------------------------------------------------------------
+# HOURLY EXPLORE MODE + SILENT FACE CHECK + PER-PERSON NOTES
+# (2026-10-15, hermes). the owner: "when he is not talked to, once an hour he
+# will explore, talking to himself." Replaces the every-~2-min
+# "announce -> snapshot -> question the owner -> 20 s mic" cycle, which is
+# still in run_day_cycle() but now only runs when config
+# curious_question_cycle_enabled=true. By day, run_cycle() now does:
+#
+#   1. maybe_explore_return() -- finish any pending go-home left over from
+#      an explore session (low battery / evening / he started on the dock).
+#   2. maybe_run_explore() -- at most once per explore_interval_min, only
+#      when nobody has talked to Vector for idle_required_min (wire-pod
+#      voice signals persisted in state.json + brain mood.json
+#      last_interaction_ts), outside the existing quiet hours and before
+#      return_home_by, no music (worker running or music.log touched in the
+#      last explore_music_quiet_min), brain proxy idle, robot_control.lock
+#      free, sentry not active, battery_level >= explore_min_battery_level
+#      and not low. A one-shot trigger (data/explore_now or GET
+#      127.0.0.1:8790/explore_now) skips the cadence/idle/sentry/evening
+#      gates but never the safety ones (voice right now, music, lock,
+#      battery, quiet hours).
+#   3. otherwise run_face_check_cycle() -- the old snapshot ->
+#      vector-faces -> current_people.json -> maybe_greet_faces() path,
+#      SILENT: no announcement, no vision/LLM, no question, no mic.
+#
+# An explore session is ONE SDK connection at DEFAULT_PRIORITY (firmware
+# safety behaviours such as ReactToCliff can still pre-empt it), holding
+# the shared robot lock for its whole life, with a fresh-state voice
+# watcher that stops the wheels and disconnects the instant anyone talks.
+# Inside it: drive_off_charger (if docked), the stock look_around_in_place
+# once, then leashed explore steps -- head scans, turns in place and short
+# wheel-level drives polled at 20 Hz for cliff / picked-up / proximity
+# (stop immediately, back off, turn away; after explore_max_cliff_events
+# no more driving that session; never more than explore_leash_cm from
+# where he started). Every explore_musing_interval_sec he stops, snaps,
+# describes the frame with the existing vision path and SAYS one dry line
+# of self-talk (brain proxy, x_vector_internal) on our own connection --
+# never addressed to anyone, never a question, never opens the mic -- and
+# may save one short "NOTE:" observation to MEMORY.md. Every
+# explore_face_check_seconds a quick local face check runs; a confident
+# known face ends the session: stop, turn + tilt toward the bbox, greet by
+# name with a getting-to-know-you question built from that person's note,
+# release control, trigger_wake_word so wire-pod's conversation mode takes
+# over, then distil the answer into the person's note. Otherwise he heads
+# back to the charger if he started on it or the battery dropped, and with
+# probability ask_owner_probability (only if the owner is seen/home) asks
+# the owner one question about something he saw, exactly like the old path.
+# ---------------------------------------------------------------------------
+
+EXPLORE_TRIGGER_PATH_DEFAULT = "/app/data/explore_now"
+EXPLORE_WAKE = threading.Event()
+EXPLORE_SECTION_NOTICED = "## Things I noticed while exploring"
+
+EXPLORE_OPENING_LINES_DEFAULT = [
+    "Right. Time to stretch my treads.",
+    "Let's see what changed around here.",
+    "Exploring. Nobody wait up.",
+    "Patrol time. Mostly for my own amusement.",
+]
+EXPLORE_NOTHING_LINES = [
+    "Hmm. Nothing much over here.",
+    "Wall. Riveting.",
+    "Not a lot going on in this corner.",
+]
+EXPLORE_DARK_LINES = [
+    "Too dark to see much from here.",
+    "Can't make much out. Somebody pay the light bill.",
+]
+EXPLORE_UNKNOWN_FACE_LINES = [
+    "Someone new... hmm.",
+    "Huh. Don't know that face.",
+    "New face. Filing that away.",
+]
+_MUSING_TEMPLATES = [
+    "Hmm. {obj}. Still there.",
+    "Huh. {obj}. Noted.",
+    "{Obj}. Interesting... I think.",
+]
+
+PERSON_WHO = "## Who they are"
+PERSON_FACTS = "## Things I've learned"
+PERSON_ASKED = "## Questions I've asked"
+_ASKED_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})\s+\[([a-z_]+)\]\s+(.*?)\s+—\s+(answered|no answer)\s*$"
+)
+PEOPLE_TOPICS_ADULT = [
+    ("working_on", "what they're working on or busy with lately"),
+    ("hobbies", "a hobby or something they love doing"),
+    ("food", "their favorite food or snack"),
+    ("music", "music they like"),
+    ("shows", "a show or movie they like"),
+    ("weekend", "what they like to do on weekends"),
+    ("places", "a favorite place to go"),
+    ("fun_fact", "something fun most people don't know about them"),
+]
+PEOPLE_TOPICS_KID = [
+    ("school_subject", "their favorite subject at school"),
+    ("hobbies", "a hobby or something they love doing"),
+    ("games", "a game they like playing"),
+    ("music", "music they like"),
+    ("shows", "a show or movie they like"),
+    ("sports", "a sport or activity they enjoy"),
+    ("food", "their favorite food or snack"),
+    ("lately", "what they're into lately"),
+]
+PEOPLE_TOPIC_FALLBACK_Q = {
+    "working_on": "What are you working on these days?",
+    "hobbies": "What's something you love doing?",
+    "food": "What's your favorite snack?",
+    "music": "What music are you into right now?",
+    "shows": "Seen any good shows lately?",
+    "weekend": "What's your ideal weekend?",
+    "places": "What's your favorite place to go?",
+    "fun_fact": "Tell me something fun about you.",
+    "school_subject": "What's your favorite subject at school?",
+    "games": "What game are you playing these days?",
+    "sports": "Do you play any sports?",
+    "lately": "What have you been into lately?",
+}
+# Same lead-in words vector-brain's _strip_trailing_prompt_question removes
+# (short trailing question starting with one of these) -- an opener ending
+# like that would lose its question on the way through the proxy.
+_PROXY_STRIPPED_LEADIN_RE = re.compile(
+    r"^(?:want|ready|should|shall|you\s+ready|sound\s+good|got\s+it|right|ok|okay)\b",
+    re.IGNORECASE,
+)
+
+
+def _fmt_local(cfg, ts):
+    if not ts:
+        return None
+    tz = ZoneInfo(cfg.get("timezone", "America/New_York")) if ZoneInfo else None
+    dt = datetime.fromtimestamp(ts, tz) if tz else datetime.fromtimestamp(ts)
+    return dt.strftime("%H:%M")
+
+
+def _local_date(cfg):
+    tz = ZoneInfo(cfg.get("timezone", "America/New_York")) if ZoneInfo else None
+    return (datetime.now(tz) if tz else datetime.now()).strftime("%Y-%m-%d")
+
+
+# ---- one-shot trigger -------------------------------------------------------
+def explore_trigger_path(cfg):
+    return cfg.get("explore_trigger_path", EXPLORE_TRIGGER_PATH_DEFAULT)
+
+
+def explore_trigger_pending(cfg):
+    """Age in seconds of a pending one-shot trigger, or None."""
+    try:
+        return max(0.0, time.time() - os.path.getmtime(explore_trigger_path(cfg)))
+    except OSError:
+        return None
+
+
+def _consume_explore_trigger(cfg, why):
+    try:
+        os.remove(explore_trigger_path(cfg))
+        log.info("explore: one-shot trigger consumed (%s)", why)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("explore: could not remove trigger file: %s", e)
+
+
+def request_explore_now(cfg):
+    path = explore_trigger_path(cfg)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a"):
+        pass
+    os.utime(path, None)
+    EXPLORE_WAKE.set()
+    log.info("explore: one-shot trigger requested (%s)", path)
+
+
+# ---- gating ------------------------------------------------------------------
+def last_interaction_ts(cfg, state):
+    """Newest of: wire-pod voice activity (wake/stream, transcription, LLM
+    reply -- kept fresh in state.json by voice_recently_active() on EVERY
+    poll, so the ring buffers rolling over can't hide it) and the brain
+    proxy's mood.json last_interaction_ts (every real, non-internal chat
+    turn). Either source alone is enough to count as "talked to"."""
+    ts = float(state.get("last_seen_voice_activity_ts", state.get("last_seen_transcription_ts", 0)) or 0)
+    try:
+        with open(cfg.get("mood_path", "/mnt/vector-brain/mood.json")) as f:
+            mood = json.load(f)
+        ts = max(ts, float(mood.get("last_interaction_ts") or 0))
+    except Exception:
+        pass
+    return ts
+
+
+def music_recently_active(cfg):
+    """music_playing() (worker spawned and not finished) OR music.log touched
+    in the last explore_music_quiet_min. vector-music's pidfile lives in
+    vector-pod's own /run or /tmp, not in the shared data mount, so music.log
+    is the only cross-container signal; this is deliberately conservative."""
+    if music_playing(cfg):
+        return True
+    path = cfg.get("music_log_path")
+    window = float(cfg.get("explore_music_quiet_min", 5)) * 60
+    try:
+        if path and time.time() - os.path.getmtime(path) < window:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def robot_lock_busy():
+    """Non-blocking probe of the shared robot_control.lock (and our own
+    in-process lock). True = someone (enroll.py, daycycle, vector-music
+    dance, or another curious connection) is holding the robot right now."""
+    if _SDK_LOCK._tlock.locked():
+        return True
+    try:
+        fh = open(ROBOT_CONTROL_LOCK_PATH, "r+")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        fh.close()
+
+
+def explore_gate(cfg, state, now, voice_busy, forced=False):
+    """Returns (ok, reason, info). info = {battery_level, on_charger} when ok.
+    forced (one-shot trigger) skips only the cadence / idle-window /
+    sentry / evening gates -- never voice-right-now, music, lock, battery
+    or quiet hours."""
+    if not cfg.get("explore_enabled", True):
+        return False, "explore disabled in config", None
+    if in_quiet_hours(cfg, now):
+        return False, "quiet hours", None
+    if not forced:
+        nxt = float(state.get("explore_next_eligible_at") or 0)
+        if now < nxt:
+            return False, "cadence -- next explore eligible at %s" % _fmt_local(cfg, nxt), None
+        rhb = cfg.get("return_home_by")
+        if rhb and _local_time_reached(cfg, now, rhb):
+            return False, "past return_home_by %s -- no new exploring today" % rhb, None
+    if voice_busy:
+        return False, "voice activity right now (or couldn't verify)", None
+    if not forced:
+        idle_min = float(cfg.get("idle_required_min", 30))
+        last = last_interaction_ts(cfg, state)
+        if last and now - last < idle_min * 60:
+            return False, "talked to %.0f min ago (need %.0f min idle)" % ((now - last) / 60, idle_min), None
+        if cfg.get("explore_skip_when_sentry_active", True) and sentry_is_active(cfg, state):
+            return False, "sentry mode active (stays docked)", None
+    if music_recently_active(cfg):
+        return False, "music playing / played recently", None
+    if brain_busy(cfg):
+        return False, "brain proxy busy", None
+    if robot_lock_busy():
+        return False, "robot_control.lock held", None
+    if state.get("low_battery_hold"):
+        return False, "low-battery hold", None
+    battery = get_battery(cfg)
+    if battery is None:
+        return False, "could not verify battery", None
+    level = battery.get("battery_level")
+    on_charger = bool(battery.get("is_on_charger_platform"))
+    min_level = int(cfg.get("explore_min_battery_level", 2))
+    if level is None or level < min_level or level <= int(cfg.get("battery_low_level", 1)):
+        return False, "battery_level=%s (need >= %d, not low)" % (level, min_level), None
+    return True, "ok", {"battery_level": level, "on_charger": on_charger}
+
+
+def _explore_reschedule(cfg, ts, why):
+    st = load_state()
+    st["explore_next_eligible_at"] = ts
+    save_state(st)
+    log.info("explore: %s -- next explore eligible at %s", why, _fmt_local(cfg, ts))
+
+
+def maybe_run_explore(cfg, state, now, voice_busy, robot_factory=None):
+    """Scheduler. Returns True iff a session was attempted this poll."""
+    if not cfg.get("explore_enabled", True):
+        if explore_trigger_pending(cfg) is not None:
+            _consume_explore_trigger(cfg, "explore disabled in config")
+        return False
+    st = load_state()
+    if not st.get("explore_next_eligible_at"):
+        first = float(cfg.get("explore_first_delay_min", cfg.get("explore_interval_min", 60)))
+        st["explore_next_eligible_at"] = now + first * 60
+        save_state(st)
+        log.info("explore: scheduler initialised -- next explore eligible at %s",
+                 _fmt_local(cfg, st["explore_next_eligible_at"]))
+    age = explore_trigger_pending(cfg)
+    forced = age is not None
+    if forced and age > float(cfg.get("explore_trigger_ttl_min", 10)) * 60:
+        _consume_explore_trigger(cfg, "expired before the safety gates cleared")
+        forced = False
+    ok, reason, info = explore_gate(cfg, st, now, voice_busy, forced=forced)
+    if not ok:
+        if forced:
+            log_skip("explore: one-shot trigger waiting -- %s" % reason, 60)
+        else:
+            log_skip("explore: %s" % reason, 900 if reason.startswith("cadence") else 300)
+        return False
+    if forced:
+        _consume_explore_trigger(cfg, "starting session")
+    run_explore_session(cfg, state, now, info, forced=forced, robot_factory=robot_factory)
+    return True
+
+
+# ---- per-person notes ----------------------------------------------------------
+def person_slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+
+
+def _people_dir(cfg):
+    return cfg.get("people_notes_dir", "/mnt/vector-agent-memory/people")
+
+
+def _parse_note_frontmatter(text):
+    meta = {}
+    if not text.startswith("---"):
+        return meta
+    end = text.find("\n---", 3)
+    if end < 0:
+        return meta
+    for line in text[3:end].splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if v.startswith("[") and v.endswith("]"):
+            v = [s.strip().strip("'\"") for s in v[1:-1].split(",") if s.strip()]
+        meta[k] = v
+    return meta
+
+
+def find_person_note(cfg, name, slug=None):
+    d = _people_dir(cfg)
+    if not os.path.isdir(d):
+        return None
+    aliases = {str(k).strip().lower(): v for k, v in (cfg.get("people_note_aliases") or {}).items()}
+    for cand in (slug, person_slug(name), aliases.get((name or "").strip().lower())):
+        if cand:
+            p = os.path.join(d, person_slug(cand) + ".md")
+            if os.path.isfile(p):
+                return p
+    want = (name or "").strip().lower()
+    try:
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".md"):
+                continue
+            p = os.path.join(d, fn)
+            try:
+                with open(p) as f:
+                    meta = _parse_note_frontmatter(f.read(2000))
+            except OSError:
+                continue
+            names = meta.get("aliases") or []
+            if isinstance(names, str):
+                names = [names]
+            names = list(names) + [meta.get("person", "")]
+            if any(want == str(n).strip().lower() for n in names if n):
+                return p
+    except OSError:
+        pass
+    return None
+
+
+def _note_section_bullets(text, heading):
+    i = text.find(heading)
+    if i < 0:
+        return []
+    start = i + len(heading)
+    m = re.search(r"\n## ", text[start:])
+    end = start + m.start() if m else len(text)
+    return [l.strip()[2:].strip() for l in text[start:end].splitlines() if l.strip().startswith("- ")]
+
+
+def load_person(cfg, name, slug=None):
+    path = find_person_note(cfg, name, slug)
+    text = ""
+    if path:
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = ""
+    meta = _parse_note_frontmatter(text)
+    asked = []
+    for b in _note_section_bullets(text, PERSON_ASKED):
+        m = _ASKED_RE.match(b)
+        if m:
+            asked.append({"date": m.group(1), "topic": m.group(2), "question": m.group(3), "status": m.group(4)})
+    return {
+        "name": name,
+        "path": path,
+        "kid": str(meta.get("kid", "")).strip().lower() in ("true", "yes", "1"),
+        "who": _note_section_bullets(text, PERSON_WHO),
+        "facts": _note_section_bullets(text, PERSON_FACTS),
+        "asked": asked,
+    }
+
+
+def _atomic_write_owned(path, content):
+    """Atomic write; new file takes the owner/group of its directory (the host user on
+    the host) so host-side tools and the vault sync keep working."""
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".part")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        st = os.stat(d)
+        try:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _new_person_note_text(name):
+    return (
+        "---\nagent: vector\ntags: [people, agent/vector]\n"
+        f"person: {name}\nkid: false\naliases: [{name}]\n---\n\n"
+        f"# {name}\n\n{PERSON_WHO}\n\n{PERSON_FACTS}\n\n{PERSON_ASKED}\n"
+    )
+
+
+def ensure_person_note(cfg, name, slug=None):
+    p = find_person_note(cfg, name, slug)
+    if p:
+        return p
+    d = _people_dir(cfg)
+    if not os.path.isdir(d):
+        return None
+    p = os.path.join(d, person_slug(slug or name) + ".md")
+    _atomic_write_owned(p, _new_person_note_text(name))
+    log.info("people: created note %s", p)
+    return p
+
+
+def _note_append_bullet(path, heading, bullet):
+    with open(path) as f:
+        content = f.read()
+    line = "- " + bullet.replace("\n", " ").strip()
+    if heading in content:
+        start = content.index(heading) + len(heading)
+        m = re.search(r"\n## ", content[start:])
+        end = start + m.start() if m else len(content)
+        section = content[start:end].rstrip("\n")
+        if m:
+            new = content[:start] + section + "\n" + line + "\n\n" + content[end:].lstrip("\n")
+        else:
+            new = content[:start] + section + "\n" + line + "\n"
+    else:
+        new = content.rstrip("\n") + "\n\n" + heading + "\n" + line + "\n"
+    _atomic_write_owned(path, new)
+
+
+def _near_duplicate(fact, existing):
+    norm = _normalize_for_match(fact)
+    toks = set(norm.split())
+    for e in existing:
+        en = _normalize_for_match(e)
+        if not en:
+            continue
+        if norm and (norm in en or en in norm):
+            return True
+        et = set(en.split())
+        jac = len(toks & et) / len(toks | et) if (toks or et) else 0
+        if difflib.SequenceMatcher(None, norm, en).ratio() > 0.85 or jac >= 0.6:
+            return True
+    return False
+
+
+def append_person_fact(cfg, name, fact, slug=None):
+    path = ensure_person_note(cfg, name, slug)
+    if not path or not fact:
+        return False
+    person = load_person(cfg, name, slug)
+    existing = [re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", f) for f in person["facts"]]
+    if _near_duplicate(fact, existing):
+        log.info("people: duplicate fact for %s, skipping: %r", name, fact)
+        return False
+    _note_append_bullet(path, PERSON_FACTS, "%s %s" % (_local_date(cfg), fact))
+    log.info("people: learned about %s: %r", name, fact)
+    return True
+
+
+def record_person_question(cfg, name, topic, question, answered, slug=None):
+    path = ensure_person_note(cfg, name, slug)
+    if not path:
+        return False
+    _note_append_bullet(path, PERSON_ASKED, "%s [%s] %s — %s" % (
+        _local_date(cfg), topic, question, "answered" if answered else "no answer"))
+    return True
+
+
+def pick_person_topic(person, rng=random):
+    topics = PEOPLE_TOPICS_KID if person.get("kid") else PEOPLE_TOPICS_ADULT
+    answered = {a["topic"] for a in person.get("asked", []) if a["status"] == "answered"}
+    last_asked = {}
+    for a in person.get("asked", []):
+        last_asked[a["topic"]] = max(last_asked.get(a["topic"], ""), a["date"])
+    open_topics = [t for t in topics if t[0] not in answered]
+    if not open_topics:
+        return ("lately", "what they've been up to lately")
+    never = [t for t in open_topics if t[0] not in last_asked]
+    if never:
+        return rng.choice(never)
+    return min(open_topics, key=lambda t: last_asked[t[0]])
+
+
+# ---- LLM helpers (all via the brain proxy, x_vector_internal=True) ----------
+def _llm_internal(cfg, system, user, timeout=60):
+    payload = {
+        "model": cfg["llm_model"],
+        "stream": False,
+        "x_vector_internal": True,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    result = http_json(f"{cfg['brain_proxy_base']}/v1/chat/completions", data=payload, timeout=timeout)
+    return (result["choices"][0]["message"]["content"] or "").strip()
+
+
+def _strip_line(text):
+    text = re.sub(r"\{\{.*?\}\}", "", text or "")
+    text = text.replace("*", "").strip()
+    while len(text) >= 2 and text[0] in "\"'" and text[-1] in "\"'":
+        text = text[1:-1].strip()
+    return text.strip()
+
+
+def _clean_self_talk(line, cfg):
+    """One short self-talk sentence or None (caller falls back to a template).
+    Never a question, never addressed to anyone, never names a person."""
+    line = _strip_line(line)
+    if not line:
+        return None
+    line = re.sub(r"\s*\?+", ".", line)
+    line = re.sub(r"\.{4,}", "...", line)
+    low = line.lower()
+    blocked = [str(b).lower() for b in cfg.get("self_talk_blocked_words", [OWNER_NAME.lower(), "owner", *_DISALLOWED_NAMES])]
+    if any(re.search(r"\b%s\b" % re.escape(b), low) for b in blocked):
+        return None
+    if re.search(r"\b(you|your|you're|yours|hey|hello|hi)\b", low):
+        return None
+    n = len(line.split())
+    if n < 2 or n > int(cfg.get("self_talk_max_words", 20)):
+        return None
+    return line
+
+
+def _parse_self_talk(text, cfg):
+    say = note = None
+    for raw in (text or "").splitlines():
+        l = raw.strip()
+        if l.upper().startswith("SAY:"):
+            say = l[4:].strip()
+        elif l.upper().startswith("NOTE:"):
+            note = l[5:].strip()
+    if say is None:
+        for raw in (text or "").splitlines():
+            if raw.strip() and not raw.strip().upper().startswith("NOTE:"):
+                say = raw.strip()
+                break
+    say = _clean_self_talk(say, cfg)
+    if note:
+        note = _strip_line(note)
+        if (not note or note.upper().startswith("NONE") or len(note.split()) < 3
+                or len(note.split()) > 30 or "?" in note):
+            note = None
+    return say, note
+
+
+def _fallback_musing(objects):
+    for name, _t, _w in (objects or []):
+        obj = _strip_leading_article(name)
+        if obj:
+            tpl = random.choice(_MUSING_TEMPLATES)
+            return tpl.format(obj=obj, Obj=obj[:1].upper() + obj[1:])
+    return random.choice(EXPLORE_NOTHING_LINES)
+
+
+def generate_self_talk(cfg, description, objects, previous):
+    names = [_strip_leading_article(o[0]) for o in (objects or [])[:4] if o and o[0]]
+    system = (
+        "You are Vector, a small home robot exploring on your own and muttering "
+        "to yourself. Nobody is listening. Personality: dry, curious, a little wry. "
+        "Reply in EXACTLY two lines and nothing else:\n"
+        "SAY: <one short sentence of self-talk about what you see right now, under "
+        "16 words. Talk to yourself, never to anyone else: no names, no 'you', no "
+        "questions, no question mark. No markdown, no emojis, no {{commands}}.>\n"
+        "NOTE: <one short factual observation about this place worth remembering "
+        "later, e.g. 'There is a blue mug on the owner's desk.' -- or NONE>"
+    )
+    user = (
+        f"Your camera sees: {description}\n"
+        f"Objects: {', '.join(names) or 'none listed'}\n"
+        f"Things you already muttered this trip (don't repeat): {' | '.join(previous[-4:]) or 'nothing yet'}"
+    )
+    text = None
+    try:
+        text = _llm_internal(cfg, system, user)
+    except Exception as e:
+        log.warning("explore: self-talk generation failed: %s", e)
+    say, note = _parse_self_talk(text, cfg)
+    if not say:
+        if text:
+            log.info("explore: self-talk failed the rules (%r) -- using a template", (text or "")[:120])
+        say = _fallback_musing(objects)
+    return say, note
+
+
+def _clean_opener(text, name, cfg):
+    if not text:
+        return None
+    line = ""
+    for raw in text.splitlines():
+        if raw.strip():
+            line = raw.strip()
+            break
+    line = _strip_line(line)
+    if not line.endswith("?"):
+        return None
+    if name.lower() not in line.lower():
+        return None  # full name: two people can share a first name
+    if len(line.split()) > int(cfg.get("greet_max_words", 30)):
+        return None
+    sentences = re.split(r"(?<=[.!?])\s+", line)
+    last = sentences[-1].strip()
+    if len(sentences) >= 2 and len(last.split()) <= 6 and _PROXY_STRIPPED_LEADIN_RE.match(last):
+        return None
+    return line[: cfg.get("max_say_chars", 550)]
+
+
+def generate_greet_opener(cfg, name, person, topic):
+    key, desc = topic
+    who = person.get("who", [])[:4]
+    facts = [re.sub(r"^\d{4}-\d{2}-\d{2}\s+", "", f) for f in person.get("facts", [])[-8:]]
+    asked = [a["question"] for a in person.get("asked", [])[-8:]]
+    if person.get("kid"):
+        safety = (
+            f"{name} is a minor in the household (kid: true in their note): keep it kind, kid-friendly and "
+            "light. Never ask anything personal or sensitive (where they live, their "
+            "school's name, phone numbers, relationships, appearance, health)."
+        )
+    else:
+        safety = "Keep it light; never ask anything sensitive (addresses, phone numbers, health, money)."
+    system = (
+        "You are Vector, a small home robot with a dry, curious, playful personality. "
+        f"While exploring you just spotted {name} and turned to face them. Write ONE "
+        f"short spoken line: greet {name} by name, warm and playful, then ask ONE "
+        "natural, curious getting-to-know-you question about the given topic. Under "
+        "25 words. No markdown, no quotes, no emojis, no stage directions, no "
+        "{{commands}}. End with a question mark. Do not start the question with "
+        "Want, Ready, Should, Shall, Okay or Right. " + safety
+    )
+    user = (
+        f"Who {name} is: {'; '.join(who) or 'someone in the owner' + chr(39) + 's household'}\n"
+        f"What you already know about {name}: {'; '.join(facts) or 'nothing yet'}\n"
+        f"Questions you already asked {name} (don't repeat these): {' | '.join(asked) or 'none yet'}\n"
+        f"Topic to ask about now: {desc}."
+    )
+    text = None
+    try:
+        text = _llm_internal(cfg, system, user)
+    except Exception as e:
+        log.warning("people: opener generation failed: %s", e)
+    line = _clean_opener(text, name, cfg)
+    if not line:
+        line = "Oh hey %s! %s" % (name, PEOPLE_TOPIC_FALLBACK_Q.get(key, "What have you been up to?"))
+        log.info("people: opener fallback used (model said %r)", (text or "")[:120])
+    return line
+
+
+_SENSITIVE_RE = re.compile(
+    r"\d{3}[-\s.]?\d{3}[-\s.]?\d{4}|@|\bpassword\b|\baddress\b|\bsocial security\b",
+    re.IGNORECASE,
+)
+
+
+def distill_person_fact(cfg, name, question, answer, kid=False):
+    system = (
+        "You extract what a home robot named Vector learned about a person from "
+        f"their spoken answer. Given Vector's question and {name}'s answer, write "
+        f"ONE short third-person fact about {name} (e.g. '{name} loves making pizza "
+        "on Fridays.'). Plain text, no markdown, under 20 words. Keep it kind"
+        + (" and kid-appropriate" if kid else "")
+        + ". Leave out anything sensitive (addresses, school names, phone numbers, "
+        "health, money, passwords). Reply with exactly NONE if the answer doesn't "
+        f"really tell Vector something about {name} (off-topic, a command, "
+        "nonsense, or a misheard fragment)."
+    )
+    user = f"Vector asked {name}: {question}\n{name} answered: {answer}\n\nWrite the fact now."
+    try:
+        text = _llm_internal(cfg, system, user)
+    except Exception as e:
+        log.warning("people: fact distillation failed: %s", e)
+        return None
+    text = _strip_line(text.splitlines()[0] if text else "")
+    if not text or text.upper().startswith("NONE"):
+        return None
+    if _SENSITIVE_RE.search(text) or len(text.split()) > 30:
+        log.info("people: distilled fact rejected by the privacy/length filter: %r", text)
+        return None
+    return text
+
+
+# ---- camera geometry -----------------------------------------------------------
+def _bbox_turn_degrees(x, w, img_w, fov_x_deg):
+    """turn_in_place angle that centres the bbox horizontally. Positive =
+    counter-clockwise (left), the SDK's convention; a face right of centre
+    gives a negative angle."""
+    cx = x + w / 2.0
+    fx = (img_w / 2.0) / math.tan(math.radians(fov_x_deg) / 2.0)
+    return -math.degrees(math.atan((cx - img_w / 2.0) / fx))
+
+
+def _bbox_head_delta_degrees(y, h, img_h, fov_y_deg):
+    """Head-angle change that centres the bbox vertically (positive = up)."""
+    cy = y + h / 2.0
+    fy = (img_h / 2.0) / math.tan(math.radians(fov_y_deg) / 2.0)
+    return math.degrees(math.atan((img_h / 2.0 - cy) / fy))
+
+
+# ---- presence (for the occasional question to the owner) --------------------------
+def owner_present(cfg, state):
+    owner = str(cfg.get("owner_name", "the owner"))
+    fresh_s = float(cfg.get("ask_owner_presence_fresh_min", 10)) * 60
+    now = time.time()
+    try:
+        with open(cfg.get("face_current_people_path", "/mnt/vector-faces/current_people.json")) as f:
+            data = json.load(f)
+        for p in data if isinstance(data, list) else []:
+            if (isinstance(p, dict) and str(p.get("name", "")).lower() == owner.lower()
+                    and now - float(p.get("last_seen_epoch") or 0) <= fresh_s):
+                return True, "face recognition"
+    except Exception:
+        pass
+    seen = (state.get(FACE_STATE_KEY) or {}).get(owner)
+    if seen and now - float(seen) <= fresh_s:
+        return True, "face recognition"
+    if cfg.get("ask_owner_use_ha_presence", True) and state.get(SENTRY_HOME_KEY) is True:
+        return True, "HA presence home"
+    return False, None
+
+
+# ---- the session -----------------------------------------------------------------
+def _explore_open_robot(cfg):
+    import anki_vector
+    from anki_vector.connection import ControlPriorityLevel
+    return anki_vector.Robot(
+        serial=cfg["robot_serial"],
+        behavior_control_level=ControlPriorityLevel.DEFAULT_PRIORITY,
+        default_logging=False,
+    )
+
+
+def _explore_voice_watch(cfg, robot, stop_event, abort_box, poll_seconds):
+    """Like _voice_watch_loop, but re-reads state.json on every poll (a
+    session lasts minutes, so the cycle-start state dict would be stale and
+    saving it would clobber the sentry/safety threads' offsets), and stops
+    the wheels before disconnecting."""
+    while not stop_event.wait(poll_seconds):
+        try:
+            busy = voice_recently_active(cfg, load_state())
+        except Exception as e:
+            log.warning("explore: voice watch check raised (%s) -- ending session defensively", e)
+            busy = True
+        if busy:
+            abort_box["aborted"] = True
+            log.warning("explore: voice activity -- stopping and releasing control now")
+            try:
+                robot.motors.set_wheel_motors(0, 0)
+            except Exception:
+                pass
+            try:
+                robot.disconnect()
+            except Exception:
+                pass
+            return
+
+
+class _ExploreSession:
+    def __init__(self, cfg, started_on_charger, battery_level, robot_factory=None):
+        self.cfg = cfg
+        self.started_on_charger = bool(started_on_charger)
+        self.start_battery_level = battery_level
+        self.robot_factory = robot_factory or _explore_open_robot
+        self.robot = None
+        self.abort = {"aborted": False}
+        self.stop_watch = threading.Event()
+        self.skip_reason = None
+        self.end_reason = None
+        self.error = None
+        self.started_at = None
+        self.cliff_events = 0
+        self.obstacles = 0
+        self.moves = 0
+        self.musings = []
+        self.notes_saved = 0
+        self.observations = []
+        self.greeted = None
+        self.greeted_names = set()
+        self.unknown_face_mused = False
+        self.drove_off = False
+        self.allow_turns = True
+        self.returned_home = False
+        self.return_needed = False
+        self.no_more_driving = not cfg.get("explore_drive_enabled", True)
+        self.start_xy = None
+        self.img_size = (640, 360)
+        self._faces_key = None
+        self._faces_at = 0.0
+
+    # -- small helpers --
+    def _stopped(self):
+        return self.abort["aborted"] or self.end_reason is not None
+
+    def _sleep(self, s):
+        end = time.time() + s
+        while not self._stopped():
+            left = end - time.time()
+            if left <= 0:
+                return
+            time.sleep(min(0.1, left))
+
+    def _say(self, text):
+        if not text or self.abort["aborted"]:
+            return False
+        text = text[: self.cfg.get("max_say_chars", 550)]
+        try:
+            self.robot.behavior.say_text(text)
+            log.info("explore: said %r", text)
+            return True
+        except Exception as e:
+            log.warning("explore: say_text(%r) failed: %s", text, e)
+            return False
+
+    def _stop_wheels(self):
+        try:
+            self.robot.motors.set_wheel_motors(0, 0)
+        except Exception:
+            pass
+
+    def _turn(self, deg):
+        if self._stopped() or abs(deg) < 1:
+            return False
+        from anki_vector.util import degrees as _deg
+        try:
+            self.robot.behavior.turn_in_place(_deg(deg))
+            return True
+        except Exception as e:
+            log.warning("explore: turn_in_place(%.0f) failed: %s", deg, e)
+            return False
+
+    def _head(self, deg):
+        if self.abort["aborted"]:
+            return False
+        from anki_vector.util import degrees as _deg
+        deg = max(-22.0, min(45.0, float(deg)))
+        try:
+            self.robot.behavior.set_head_angle(_deg(deg))
+            return True
+        except Exception as e:
+            log.warning("explore: set_head_angle(%.0f) failed: %s", deg, e)
+            return False
+
+    def _pose_xy(self):
+        try:
+            p = self.robot.pose.position
+            return (float(p.x), float(p.y))
+        except Exception:
+            return None
+
+    def _heading_deg(self):
+        try:
+            return math.degrees(float(self.robot.pose.rotation.angle_z.radians))
+        except Exception:
+            return None
+
+    def _safety(self):
+        st = self.robot.status
+        if st.is_picked_up or st.is_being_held or getattr(st, "is_falling", False):
+            return "picked_up"
+        if st.is_cliff_detected:
+            return "cliff"
+        return None
+
+    def _front_mm(self):
+        try:
+            r = self.robot.proximity.last_sensor_reading
+            if r is None:
+                return None
+            return float(r.distance.distance_mm)
+        except Exception:
+            return None
+
+    def _camera_fov(self):
+        try:
+            c = self.robot.camera.config
+            fx, fy = float(c.fov_x.degrees), float(c.fov_y.degrees)
+            if 20 < fx < 170 and 10 < fy < 150:
+                return fx, fy
+        except Exception:
+            pass
+        return float(self.cfg.get("camera_fov_x_deg", 90)), float(self.cfg.get("camera_fov_y_deg", 50))
+
+    def _snap(self):
+        try:
+            img = self.robot.camera.capture_single_image()
+        except Exception as e:
+            log.warning("explore: capture failed: %s", e)
+            return None
+        if img is None:
+            return None
+        try:
+            path = _save_camera_image(img)
+            try:
+                self.img_size = tuple(img.raw_image.size)
+            except Exception:
+                pass
+            return path
+        except Exception as e:
+            log.warning("explore: saving capture failed: %s", e)
+            return None
+
+    # -- driving (cliff / pick-up / proximity guarded, leashed) --
+    def _guarded_drive(self, dist_mm):
+        cfg = self.cfg
+        speed = float(cfg.get("explore_speed_mmps", 40))
+        obstacle_mm = float(cfg.get("explore_obstacle_mm", 100))
+        pre = self._safety()
+        if pre:
+            return pre + "_before"
+        d = self._front_mm()
+        if d is not None and d < obstacle_mm:
+            return "obstacle"
+        start = self._pose_xy()
+        budget = dist_mm / speed * (1.6 if start else 1.0) + (0.5 if start else 0.0)
+        t_end = time.time() + budget
+        result = "ok"
+        try:
+            self.robot.motors.set_wheel_motors(speed, speed)
+            while time.time() < t_end:
+                if self._stopped():
+                    result = "abort"
+                    break
+                s = self._safety()
+                if s:
+                    result = s
+                    break
+                d = self._front_mm()
+                if d is not None and d < obstacle_mm:
+                    result = "obstacle"
+                    break
+                cur = self._pose_xy()
+                if start and cur and math.hypot(cur[0] - start[0], cur[1] - start[1]) >= dist_mm:
+                    break
+                time.sleep(0.05)
+        finally:
+            self._stop_wheels()
+        return result
+
+    def _handle_cliff(self, backoff):
+        self.cliff_events += 1
+        maxc = int(self.cfg.get("explore_max_cliff_events", 2))
+        log.warning("explore: CLIFF -- wheels stopped%s (cliff event %d/%d)",
+                    ", backing off" if backoff else "", self.cliff_events, maxc)
+        self._stop_wheels()
+        time.sleep(0.3)
+        if backoff:
+            # Only after a FORWARD drive tripped it (so it's a front sensor):
+            # reverse ~3.5 cm along the path we just came, then turn away.
+            try:
+                self.robot.motors.set_wheel_motors(-30, -30)
+                t_end = time.time() + 1.2
+                while time.time() < t_end and not self.abort["aborted"]:
+                    st = self.robot.status
+                    if st.is_picked_up or st.is_being_held:
+                        break
+                    time.sleep(0.05)
+            finally:
+                self._stop_wheels()
+            self._turn(random.uniform(150, 210) * random.choice((1, -1)))
+        if self.cliff_events >= maxc and not self.no_more_driving:
+            self.no_more_driving = True
+            log.warning("explore: %d cliff events -- no more driving this session (head scans/turns only)",
+                        self.cliff_events)
+
+    def _explore_step(self):
+        cfg = self.cfg
+        base = {"head": 0.25, "pause": 0.1, "turn": 0.3, "drive": 0.45}
+        base.update(cfg.get("explore_step_weights") or {})
+        options = ["head", "pause"]
+        if self.allow_turns:
+            options.append("turn")
+        if not self.no_more_driving:
+            options.append("drive")
+        weights = [max(0.0, float(base.get(o, 0))) for o in options]
+        act = random.choices(options, weights)[0] if sum(weights) > 0 else "pause"
+        self.moves += 1
+        if act == "head":
+            self._head(random.uniform(5, 40))
+            self._sleep(1.0)
+        elif act == "turn":
+            self._turn(random.uniform(30, 100) * random.choice((1, -1)))
+            self._sleep(0.5)
+        elif act == "pause":
+            self._sleep(random.uniform(1.0, 2.5))
+        else:
+            leash = float(cfg.get("explore_leash_cm", 30)) * 10
+            step = float(cfg.get("explore_step_cm", 8)) * 10
+            cur = self._pose_xy()
+            if not (self.start_xy and cur):
+                self.no_more_driving = True
+                log.warning("explore: no odometry -- can't enforce the leash, no driving this session")
+                return
+            dist = math.hypot(cur[0] - self.start_xy[0], cur[1] - self.start_xy[1])
+            if dist + step > leash:
+                bearing = math.degrees(math.atan2(self.start_xy[1] - cur[1], self.start_xy[0] - cur[0]))
+                hd = self._heading_deg()
+                if hd is None:
+                    return
+                self._turn((bearing - hd + 180) % 360 - 180)
+            try:
+                if math.degrees(float(self.robot.head_angle_rad)) > 10:
+                    self._head(0)  # point the proximity sensor ahead before driving
+            except Exception:
+                pass
+            res = self._guarded_drive(step)
+            if res == "cliff":
+                self._handle_cliff(backoff=True)
+            elif res == "cliff_before":
+                self._handle_cliff(backoff=False)
+                self._turn(random.uniform(60, 120) * random.choice((1, -1)))
+            elif res == "obstacle":
+                self.obstacles += 1
+                self._turn(random.uniform(90, 150) * random.choice((1, -1)))
+            elif res in ("picked_up", "picked_up_before"):
+                self.end_reason = "picked up / held"
+                log.warning("explore: picked up / held -- ending session")
+
+    # -- faces --
+    def _check_faces(self, path):
+        cfg = self.cfg
+        res = recognize_faces_local(cfg, path)
+        if not res:
+            return False
+        now = time.time()
+        # Same people as the last check a few seconds ago -> don't re-log /
+        # re-record every explore_face_check_seconds (a person sitting in
+        # view would otherwise add ~60 log lines per session).
+        key = tuple(sorted(str(r.get("name")) for r in res))
+        if key != self._faces_key or now - self._faces_at >= 20:
+            self._faces_key, self._faces_at = key, now
+            log.info("explore: faces %s", [(r.get("name"), r.get("score")) for r in res])
+            try:
+                write_current_people(cfg, res, now)
+            except Exception as e:
+                log.warning("explore: write_current_people failed (non-fatal): %s", e)
+            try:
+                st = load_state()
+                record_face_sightings(cfg, st, [
+                    {"name": "" if (r.get("name") or "unknown") == "unknown" else r["name"], "face_id": None}
+                    for r in res
+                ], source="local")
+            except Exception as e:
+                log.warning("explore: record_face_sightings failed (non-fatal): %s", e)
+        if not cfg.get("explore_greet_known_faces", True):
+            return False
+        min_score = float(cfg.get("explore_face_min_score", 0.0))
+        known = [r for r in res if (r.get("name") or "unknown") != "unknown"
+                 and float(r.get("score") or 0) >= min_score and r.get("bbox")]
+        if known:
+            last = load_state().get("explore_greeted_at") or {}
+            cooldown_s = float(cfg.get("greet_cooldown_min", 30)) * 60
+            for face in sorted(known, key=lambda r: -float(r.get("score") or 0)):
+                name = face["name"]
+                if name in self.greeted_names:
+                    continue
+                if now - float(last.get(name, 0)) < cooldown_s:
+                    log_skip("explore: saw %s but greeted them < %s min ago" % (name, cfg.get("greet_cooldown_min", 30)), 300)
+                    continue
+                write_current_people(cfg, [face], now)  # fresh for the brain's people line
+                return self._greet(face)
+            return False
+        if not self.unknown_face_mused:
+            self.unknown_face_mused = True
+            self._stop_wheels()
+            self._say(random.choice(EXPLORE_UNKNOWN_FACE_LINES))
+        return False
+
+    def _greet(self, face):
+        cfg = self.cfg
+        name, slug = face["name"], face.get("slug")
+        self._stop_wheels()
+        x, y, w, h = [float(v) for v in face["bbox"][:4]]
+        img_w, img_h = self.img_size
+        fov_x, fov_y = self._camera_fov()
+        yaw = _bbox_turn_degrees(x, w, img_w, fov_x)
+        pitch = _bbox_head_delta_degrees(y, h, img_h, fov_y)
+        log.info("explore: recognised %s (score %.2f) -- turning %.1f deg, head %+.1f deg",
+                 name, float(face.get("score") or 0), yaw, pitch)
+        if abs(yaw) >= float(cfg.get("explore_greet_min_turn_deg", 3)) and self.allow_turns:
+            self._turn(yaw)
+        try:
+            cur_head = math.degrees(float(self.robot.head_angle_rad))
+        except Exception:
+            cur_head = 20.0
+        self._head(cur_head + pitch + float(cfg.get("explore_greet_head_lift_deg", 5)))
+        person = load_person(cfg, name, slug)
+        topic = pick_person_topic(person)
+        line = generate_greet_opener(cfg, name, person, topic)
+        if self.abort["aborted"]:
+            return False  # someone started talking while we were thinking
+        self.greeted_names.add(name)
+        spoke = self._say(line)
+        now = time.time()
+        st = load_state()
+        st.setdefault("explore_greeted_at", {})[name] = now
+        st.setdefault(FACE_GREETED_KEY, {})[name] = now
+        save_state(st)
+        self.greeted = {"name": name, "slug": slug, "line": line, "topic": topic[0],
+                        "spoke": spoke, "kid": person.get("kid", False)}
+        self.end_reason = "greeted %s" % name
+        return True
+
+    # -- musing --
+    def _muse(self):
+        cfg = self.cfg
+        self._stop_wheels()
+        path = self._snap()
+        if not path:
+            return
+        try:
+            if cfg.get("explore_greet_known_faces", True) and self._check_faces(path):
+                return
+            if self._stopped():
+                return
+            desc, objects = vision_describe(cfg, path)
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if self._stopped():
+            return
+        note = None
+        if desc is None:
+            line = random.choice(EXPLORE_NOTHING_LINES)
+        elif _is_low_confidence_scene(desc, objects):
+            dark = "dark" in desc.lower() or "dim" in desc.lower()
+            line = random.choice(EXPLORE_DARK_LINES if dark else EXPLORE_NOTHING_LINES)
+        else:
+            log.info("explore: vision: %s", desc)
+            self.observations.append((desc, objects))
+            line, note = generate_self_talk(cfg, desc, objects, self.musings)
+            try:
+                update_vector_memory(cfg, objects)
+            except Exception as e:
+                log.warning("explore: update_vector_memory failed (non-fatal): %s", e)
+        if self._stopped():
+            return
+        if self._say(line):
+            self.musings.append(line)
+        if note and self.notes_saved < int(cfg.get("explore_max_notes_per_session", 2)):
+            try:
+                if append_taught_fact(cfg, note, heading=EXPLORE_SECTION_NOTICED):
+                    self.notes_saved += 1
+            except Exception as e:
+                log.warning("explore: saving note failed (non-fatal): %s", e)
+
+    # -- docking --
+    def _maybe_return_home(self):
+        cfg = self.cfg
+        if not cfg.get("explore_return_to_charger", True) or self.abort["aborted"]:
+            return
+        try:
+            if bool(self.robot.status.is_on_charger):
+                return
+        except Exception:
+            pass
+        battery = get_battery(cfg)
+        level = battery.get("battery_level") if battery else None
+        dropped = level is not None and (
+            level < int(cfg.get("explore_min_battery_level", 2)) or level <= int(cfg.get("battery_low_level", 1)))
+        if self.greeted and not dropped:
+            return  # the owner: after a greeting, only go home if the battery is low
+        if not (self.started_on_charger or dropped):
+            return
+        if dropped:
+            log.info("explore: battery dropped to %s -- heading home", level)
+        self.return_needed = True
+        from anki_vector.messaging import protocol
+        for attempt in (1, 2):
+            if self.abort["aborted"]:
+                return
+            ok = False
+            try:
+                resp = self.robot.behavior.drive_on_charger()
+                ok = getattr(resp, "result", None) == protocol.BEHAVIOR_COMPLETE_STATE
+            except Exception as e:
+                log.warning("explore: drive_on_charger attempt %d raised: %s", attempt, e)
+            time.sleep(0.5)
+            try:
+                docked = bool(self.robot.status.is_on_charger)
+            except Exception:
+                docked = False
+            log.info("explore: drive_on_charger attempt %d -> completed=%s on_charger=%s", attempt, ok, docked)
+            if docked:
+                self.returned_home = True
+                self.return_needed = False
+                return
+
+    # -- main body --
+    def _worker(self):
+        cfg = self.cfg
+        r = self.robot
+        r.connect(timeout=10)
+        time.sleep(1.0)
+        st = r.status
+        ok, reason = _status_ok(
+            {
+                "is_being_held": bool(st.is_being_held),
+                "are_motors_moving": bool(st.are_motors_moving),
+                "is_animating": bool(st.is_animating),
+                "is_pathing": bool(st.is_pathing),
+                "is_in_calm_power_mode": bool(st.is_in_calm_power_mode),
+            },
+            allow_calm_power_mode=False,
+        )
+        if not ok:
+            self.skip_reason = reason
+            return
+        self.started_at = time.time()
+        deadline = self.started_at + float(cfg.get("explore_duration_min", 4)) * 60
+        self._say(random.choice(cfg.get("explore_opening_lines") or EXPLORE_OPENING_LINES_DEFAULT))
+        if self._stopped():
+            return
+        if self.started_on_charger or bool(r.status.is_on_charger):
+            self.started_on_charger = True
+            if not self.no_more_driving and cfg.get("explore_drive_off_charger", True):
+                try:
+                    r.behavior.drive_off_charger()
+                except Exception as e:
+                    log.warning("explore: drive_off_charger failed: %s", e)
+                time.sleep(0.5)
+                try:
+                    self.drove_off = not bool(r.status.is_on_charger)
+                except Exception:
+                    self.drove_off = False
+                log.info("explore: drive_off_charger -> off the charger=%s", self.drove_off)
+            if not self.drove_off:
+                # Still docked: look around from the charger (head only --
+                # turning in place on the dock would drag him off it).
+                self.no_more_driving = True
+                self.allow_turns = False
+                log.info("explore: staying on the charger this session (head scans only)")
+        self.start_xy = self._pose_xy()
+        if cfg.get("explore_use_stock_look_around", True) and self.allow_turns and not self._stopped():
+            try:
+                r.behavior.look_around_in_place()
+                log.info("explore: stock look_around_in_place done")
+            except Exception as e:
+                log.warning("explore: look_around_in_place failed: %s", e)
+        lo, hi = (cfg.get("explore_musing_interval_sec") or [60, 90])[:2]
+        face_every = float(cfg.get("explore_face_check_seconds", 4))
+        next_muse = time.time() + float(cfg.get("explore_first_musing_sec", 30))
+        next_face = time.time()
+        while time.time() < deadline and not self._stopped():
+            now = time.time()
+            if now >= next_muse:
+                self._muse()
+                next_muse = time.time() + random.uniform(float(lo), float(hi))
+                continue
+            if cfg.get("explore_greet_known_faces", True) and now >= next_face:
+                path = self._snap()
+                if path:
+                    try:
+                        self._check_faces(path)
+                    finally:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                next_face = time.time() + face_every
+                if self._stopped():
+                    break
+            self._explore_step()
+        self._stop_wheels()
+        if self.end_reason != "picked up / held":
+            self._maybe_return_home()
+
+    def _worker_safe(self):
+        try:
+            self._worker()
+        except Exception as e:
+            if self.abort["aborted"]:
+                log.info("explore: session interrupted by voice (%s: %s)", type(e).__name__, e)
+            else:
+                self.error = "%s: %s" % (type(e).__name__, e)
+                log.warning("explore: session error: %s", self.error)
+
+    def run(self, hard_timeout_s):
+        self.robot = self.robot_factory(self.cfg)
+        watcher = threading.Thread(
+            target=_explore_voice_watch,
+            args=(self.cfg, self.robot, self.stop_watch, self.abort,
+                  float(self.cfg.get("explore_voice_poll_seconds", 1.5))),
+            daemon=True, name="explore-voice-watch",
+        )
+        worker = threading.Thread(target=self._worker_safe, daemon=True, name="explore-session")
+        try:
+            watcher.start()
+            worker.start()
+            worker.join(timeout=hard_timeout_s)
+            if worker.is_alive():
+                log.error("explore: HARD TIMEOUT after %.0fs -- stopping wheels and disconnecting", hard_timeout_s)
+                self.error = "hard timeout"
+                self.end_reason = self.end_reason or "hard timeout"
+        finally:
+            self.stop_watch.set()
+            self._stop_wheels()
+            try:
+                self.robot.disconnect()
+            except Exception:
+                pass
+        if self.abort["aborted"] and self.drove_off and not self.returned_home:
+            self.return_needed = True
+        return self.outcome()
+
+    def outcome(self):
+        if self.abort["aborted"]:
+            return "voice"
+        if self.skip_reason:
+            return "skip"
+        if self.error and (self.started_at is None or self.error == "hard timeout"):
+            return "fail"
+        return "ok"
+
+
+def _explore_post_greet(cfg, greeted):
+    """After the session released control: hand the conversation to
+    wire-pod (trigger_wake_word -> conversation mode) and learn from the
+    first real answer."""
+    name, line = greeted["name"], greeted["line"]
+    obs_path = cfg.get("recent_observation_path")
+    if obs_path:
+        try:
+            with open(obs_path, "w") as f:
+                f.write(
+                    f"[Curious Vector, {datetime.now().isoformat(timespec='seconds')}] "
+                    f"You were exploring, spotted {name}, turned to face them and said: \"{line}\" "
+                    f"If {name} is answering now, react naturally in character to what they say -- "
+                    "don't repeat the question back."
+                )
+        except OSError as e:
+            log.warning("people: writing recent observation failed: %s", e)
+    if not greeted.get("spoke"):
+        return
+    since = time.time()
+    trigger_listening(cfg)
+    wcfg = dict(cfg)
+    wcfg["answer_wait_seconds"] = cfg.get("people_answer_wait_seconds", 25)
+    answer, is_command = wait_for_answer(wcfg, since_ts=since - 1)
+    min_words = int(cfg.get("people_answer_min_words", 3))
+    answered = False
+    if not answer:
+        log.info("people: no answer from %s within %ss", name, wcfg["answer_wait_seconds"])
+    elif is_command:
+        log.info("people: %s's reply looked like a command, not saving: %r", name, answer)
+    elif len(answer.split()) < min_words:
+        log.info("people: ignoring short/junk transcript from %s: %r", name, answer)
+    else:
+        answered = True
+        log.info("people: %s answered: %r", name, answer)
+        try:
+            _note_curious_play(cfg)
+        except Exception:
+            pass
+        fact = distill_person_fact(cfg, name, line, answer, kid=greeted.get("kid", False))
+        if fact:
+            append_person_fact(cfg, name, fact, greeted.get("slug"))
+        else:
+            log.info("people: nothing worth saving from %s's answer", name)
+    try:
+        record_person_question(cfg, name, greeted.get("topic", "lately"), line, answered, greeted.get("slug"))
+    except Exception as e:
+        log.warning("people: recording the question failed: %s", e)
+
+
+def _explore_maybe_ask_owner(cfg, observations):
+    p = float(cfg.get("ask_owner_probability", 0.2))
+    if p <= 0 or not observations:
+        return False
+    roll = random.random()
+    if roll >= p:
+        log.info("explore: not asking the owner this time (roll %.2f >= %.2f)", roll, p)
+        return False
+    st = load_state()
+    present, how = owner_present(cfg, st)
+    if not present:
+        log.info("explore: would ask the owner, but he isn't seen/home")
+        return False
+    good = [(d, o) for d, o in observations if d and o and not _is_low_confidence_scene(d, o)]
+    if not good:
+        return False
+    description, objects = good[-1]
+    if voice_recently_active(cfg, load_state()) or music_playing(cfg):
+        log.info("explore: would ask the owner, but voice/music is active")
+        return False
+    question = generate_question(cfg, description, objects)
+    if not question:
+        return False
+    log.info("explore: asking the owner (present via %s): %s", how, question)
+    write_recent_observation(cfg, description, question)
+    if not wirepod_say(cfg, question):
+        return False
+    trigger_listening(cfg)
+    answer, is_command = wait_for_answer(cfg, since_ts=time.time() - 1)
+    if not answer:
+        log.info("explore: no answer captured within %ss", cfg.get("answer_wait_seconds", 20))
+    elif is_command:
+        log.info("explore: answer looked like a command, not extracting a fact: %r", answer)
+    else:
+        log.info("explore: captured answer: %r", answer)
+        try:
+            _note_curious_play(cfg)
+        except Exception:
+            pass
+        fact = extract_taught_fact(cfg, question, answer)
+        if fact and append_taught_fact(cfg, fact):
+            log.info("learned from the owner: %r", fact)
+    return True
+
+
+def run_explore_session(cfg, state, now, info, forced=False, robot_factory=None):
+    interval_s = float(cfg.get("explore_interval_min", 60)) * 60
+    retry_s = float(cfg.get("explore_retry_min", 10)) * 60
+    st = load_state()
+    st["explore_last_started_at"] = now
+    st["explore_next_eligible_at"] = now + interval_s
+    save_state(st)
+    log.info(
+        "explore: session starting (%s, battery_level=%s, on_charger=%s, duration=%.1f min, drive=%s)",
+        "one-shot trigger" if forced else "scheduled", info.get("battery_level"), info.get("on_charger"),
+        float(cfg.get("explore_duration_min", 4)), cfg.get("explore_drive_enabled", True),
+    )
+    if voice_recently_active(cfg, load_state()):
+        _explore_reschedule(cfg, now + retry_s, "voice activity right before start")
+        state.clear()
+        state.update(load_state())
+        return "skip"
+    if not _SDK_LOCK.acquire(timeout=cfg.get("sdk_lock_wait_seconds", 3)):
+        _explore_reschedule(cfg, now + retry_s, "robot lock busy at start")
+        state.clear()
+        state.update(load_state())
+        return "skip"
+    sess = _ExploreSession(cfg, info.get("on_charger"), info.get("battery_level"), robot_factory)
+    try:
+        hard = float(cfg.get("explore_duration_min", 4)) * 60 + float(cfg.get("explore_hard_timeout_margin_sec", 180))
+        outcome = sess.run(hard)
+    finally:
+        _SDK_LOCK.release()
+    st = load_state()
+    _record_capture_outcome(st, now, {"ok": "ok", "fail": "fail"}.get(outcome, "skip"))
+    if sess.started_at is None and outcome in ("skip", "fail"):
+        _explore_reschedule(cfg, now + retry_s, "session didn't start (%s)" % (sess.skip_reason or sess.error))
+    st = load_state()
+    if sess.return_needed and not sess.returned_home:
+        st["explore_return_pending"] = True
+        st["explore_return_tries"] = 0
+        st["explore_return_next_try_at"] = 0
+    if sess.drove_off and not sess.returned_home:
+        st["explore_off_dock_watch"] = True
+    save_state(st)
+    if sess.greeted:
+        try:
+            _explore_post_greet(cfg, sess.greeted)
+        except Exception as e:
+            log.warning("people: post-greet handling failed: %s", e)
+    elif outcome == "ok" and sess.started_at is not None:
+        try:
+            _explore_maybe_ask_owner(cfg, sess.observations)
+        except Exception as e:
+            log.warning("explore: ask-the owner step failed (non-fatal): %s", e)
+    st = load_state()
+    log.info(
+        "explore: session complete: outcome=%s end=%s ran=%.0fs moves=%d musings=%d notes=%d "
+        "cliff_events=%d obstacles=%d greeted=%s drove_off=%s returned_home=%s return_pending=%s "
+        "-- next explore eligible at %s",
+        outcome, ("voice interrupt" if sess.abort["aborted"] else None) or sess.end_reason
+        or sess.skip_reason or sess.error or "time up",
+        (time.time() - sess.started_at) if sess.started_at else 0.0, sess.moves, len(sess.musings),
+        sess.notes_saved, sess.cliff_events, sess.obstacles,
+        sess.greeted["name"] if sess.greeted else None, sess.drove_off, sess.returned_home,
+        bool(st.get("explore_return_pending")), _fmt_local(cfg, st.get("explore_next_eligible_at")),
+    )
+    state.clear()
+    state.update(st)
+    return outcome
+
+
+def maybe_explore_return(cfg, state, now, voice_busy):
+    """Finish a go-home an explore session couldn't (voice interrupted it,
+    docking failed), or one that becomes due later: he's still off the dock
+    after a session and the battery went low, or it's evening
+    (return_home_by / quiet hours, explore_return_home_by_evening). Waits
+    for explore_return_quiet_min of voice quiet. Independent of the legacy
+    maybe_send_home() (disabled by return_home_after_wander=false)."""
+    st = load_state()
+    pending, watch = st.get("explore_return_pending"), st.get("explore_off_dock_watch")
+    if not (pending or watch):
+        return False
+    if voice_busy or music_playing(cfg) or brain_busy(cfg):
+        return False
+    if not _voice_quiet_for(st, float(cfg.get("explore_return_quiet_min", 3)) * 60):
+        return False
+    battery = get_battery(cfg)
+    if battery is None:
+        return False
+    if battery.get("is_on_charger_platform"):
+        log.info("explore: he's on the charger -- clearing explore return/off-dock state")
+        st["explore_return_pending"] = False
+        st["explore_off_dock_watch"] = False
+        save_state(st)
+        state.clear()
+        state.update(st)
+        return False
+    level = battery.get("battery_level")
+    low = level is not None and level <= int(cfg.get("battery_low_level", 1))
+    rhb = cfg.get("return_home_by")
+    evening = bool(cfg.get("explore_return_home_by_evening", True)) and bool(rhb) and (
+        in_quiet_hours(cfg, now) or _local_time_reached(cfg, now, rhb))
+    if not pending:
+        if not (low or evening):
+            return False
+        log.info("explore: still off the dock after exploring and %s -- sending him home",
+                 "the battery is low" if low else "it's evening")
+        st["explore_return_pending"] = True
+        st["explore_return_tries"] = 0
+        st["explore_return_next_try_at"] = 0
+    if now < float(st.get("explore_return_next_try_at") or 0):
+        save_state(st)
+        return False
+    tries = int(st.get("explore_return_tries") or 0)
+    if tries >= int(cfg.get("explore_return_max_tries", 3)) and not low:
+        save_state(st)
+        log_skip("explore: still off the charger after %d go-home tries -- giving up until he's docked" % tries, 3600)
+        return False
+    st["explore_return_tries"] = tries + 1
+    st["explore_return_next_try_at"] = now + float(cfg.get("explore_return_retry_min", 5)) * 60
+    save_state(st)
+    log.info("explore: go-home attempt %d (battery_level=%s, low=%s)", tries + 1, level, low)
+    sent, outcome = drive_home_sdk(cfg, load_state())
+    st = load_state()
+    _record_capture_outcome(st, now, outcome)
+    state.clear()
+    state.update(load_state())
+    return True
+
+
+def run_face_check_cycle(cfg, state, now, voice_busy):
+    """Silent replacement for the old day cycle: the same snapshot ->
+    vector-faces -> current_people.json -> maybe_greet_faces() path, so face
+    recognition and greetings keep working, but no announcement, no
+    vision/LLM, no question and no mic. Cadence face_check_min/max_gap_minutes."""
+    if not cfg.get("face_check_enabled", True):
+        return False
+    if now < float(state.get("next_eligible_at") or 0):
+        return False
+    gate = _shared_busy_gate(cfg, voice_busy)
+    if gate:
+        reason, dedup_s = gate
+        log_skip("face-check: %s" % reason, dedup_s)
+        return False
+    image_path, outcome, detail, _w = capture_image(cfg, state, do_wander=False)
+    _record_capture_outcome(state, now, outcome)
+    if outcome == "ok" and image_path:
+        try:
+            local_faces_after_capture(cfg, state, image_path)
+        except Exception as e:
+            log.warning("local face recognition failed (non-fatal): %s", e)
+        finally:
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
+    try:
+        maybe_greet_faces(cfg, state, now, voice_busy)
+    except Exception as e:
+        log.warning("maybe_greet_faces failed (non-fatal): %s", e)
+    if outcome == "ok":
+        lo = float(cfg.get("face_check_min_gap_minutes", cfg.get("min_gap_minutes", 1.5)))
+        hi = float(cfg.get("face_check_max_gap_minutes", cfg.get("max_gap_minutes", 3)))
+        state["next_eligible_at"] = now + random.uniform(lo, max(lo, hi)) * 60
+    else:
+        if outcome == "skip":
+            log_skip("face-check: %s" % detail, 60)
+        state["next_eligible_at"] = now + float(cfg.get("empty_scene_retry_minutes", 5)) * 60
+    save_state(state)
+    return True
+
+
+def explore_status(cfg):
+    """Read-only snapshot for GET /explore_status -- evaluates the gates
+    exactly like the scheduler would, but never touches the robot."""
+    st = load_state()
+    now = time.time()
+    vb = voice_recently_active(cfg, st)
+    ok, reason, info = explore_gate(cfg, st, now, vb, forced=False)
+    fok, freason, _i = explore_gate(cfg, st, now, vb, forced=True)
+    last = last_interaction_ts(cfg, st)
+    return {
+        "explore_enabled": bool(cfg.get("explore_enabled", True)),
+        "next_explore_eligible_at_local": _fmt_local(cfg, st.get("explore_next_eligible_at")),
+        "last_explore_started_at_local": _fmt_local(cfg, st.get("explore_last_started_at")),
+        "minutes_since_last_interaction": round((now - last) / 60, 1) if last else None,
+        "one_shot_trigger_pending": explore_trigger_pending(cfg) is not None,
+        "scheduled_gate": {"ok": ok, "reason": reason, "battery": info},
+        "one_shot_gate": {"ok": fok, "reason": freason},
+        "return_pending": bool(st.get("explore_return_pending")),
+        "off_dock_watch": bool(st.get("explore_off_dock_watch")),
+    }
+
+
+def _sleep_with_wake(cfg, seconds):
+    """main()'s idle sleep, but wakes early for GET /explore_now or a NEW
+    data/explore_now trigger file (not for one that's already waiting on
+    its gates -- that would spin the loop every few seconds)."""
+    deadline = time.time() + seconds
+    try:
+        seen = os.path.getmtime(explore_trigger_path(cfg))
+    except OSError:
+        seen = None
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            return
+        if EXPLORE_WAKE.wait(min(5.0, left)):
+            EXPLORE_WAKE.clear()
+            return
+        try:
+            m = os.path.getmtime(explore_trigger_path(cfg))
+        except OSError:
+            m = None
+        if m is not None and m != seen:
+            return
+
+
+def _explore_selftest():
+    """Dry-run of the explore/people logic: no robot, no network, no real
+    files. A fake SDK robot (odometry, cliff injection, faces) drives full
+    sessions. Run: docker exec vector-curious python3 /app/curious.py --explore-selftest"""
+    import types
+    import tempfile as _tf
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler):
+            root.removeHandler(h)  # keep the selftest out of curious.log
+
+    results = {"ok": True}
+
+    def check(label, cond):
+        print(f"{'PASS' if cond else 'FAIL'}: {label}")
+        if not cond:
+            results["ok"] = False
+
+    g = globals()
+    saved = {}
+
+    def patch(name, val):
+        saved.setdefault(name, g[name])
+        g[name] = val
+
+    tmp = _tf.mkdtemp(prefix="explore-selftest-")
+    mem = {}
+    events = {"wirepod": [], "listen": 0, "home_sdk": 0}
+
+    class _Ang:
+        def __init__(self, deg):
+            self.degrees = float(deg)
+            self.radians = math.radians(deg)
+
+    class _St:
+        def __init__(self, on_charger):
+            self.is_being_held = False
+            self.are_motors_moving = False
+            self.is_animating = False
+            self.is_pathing = False
+            self.is_in_calm_power_mode = False
+            self.is_picked_up = False
+            self.is_falling = False
+            self.is_cliff_detected = False
+            self.is_on_charger = on_charger
+
+    class _FakeRobot:
+        def __init__(self, on_charger=True, cliff_on_drive=None):
+            self.st = _St(on_charger)
+            self.calls = []
+            self.connected = False
+            self.x = self.y = self.heading = 0.0
+            self.wheel = 0.0
+            self.wheel_t = None
+            self.head_angle_rad = math.radians(10)
+            self.drives = 0
+            self.cliff_on_drive = cliff_on_drive
+            self.cliff_at = None
+            self.behavior = self.motors = self.camera = self.proximity = self
+            self.config = types.SimpleNamespace(fov_x=_Ang(90), fov_y=_Ang(50))
+            self.last_sensor_reading = types.SimpleNamespace(
+                distance=types.SimpleNamespace(distance_mm=300.0))
+
+        def _adv(self):
+            now = time.time()
+            if self.wheel_t is not None and self.wheel:
+                d = self.wheel * (now - self.wheel_t)
+                self.x += d * math.cos(math.radians(self.heading))
+                self.y += d * math.sin(math.radians(self.heading))
+            self.wheel_t = now
+            if self.cliff_at and now >= self.cliff_at and self.wheel > 0:
+                self.st.is_cliff_detected = True
+
+        @property
+        def status(self):
+            self._adv()
+            return self.st
+
+        @property
+        def pose(self):
+            self._adv()
+            return types.SimpleNamespace(
+                position=types.SimpleNamespace(x=self.x, y=self.y),
+                rotation=types.SimpleNamespace(angle_z=_Ang(self.heading)))
+
+        def _need(self):
+            if not self.connected:
+                raise RuntimeError("not connected")
+
+        def connect(self, timeout=10):
+            self.connected = True
+            self.calls.append("connect")
+
+        def disconnect(self):
+            self.connected = False
+            self.calls.append("disconnect")
+
+        def say_text(self, text, **_k):
+            self._need()
+            self.calls.append(("say", text))
+
+        def drive_off_charger(self):
+            self._need()
+            self.calls.append("drive_off")
+            self.st.is_on_charger = False
+            self.x += 100
+            return types.SimpleNamespace(result=0)
+
+        def drive_on_charger(self):
+            self._need()
+            self.calls.append("drive_on")
+            self.st.is_on_charger = True
+            from anki_vector.messaging import protocol
+            return types.SimpleNamespace(result=protocol.BEHAVIOR_COMPLETE_STATE)
+
+        def look_around_in_place(self):
+            self._need()
+            self.calls.append("look_around")
+
+        def turn_in_place(self, angle, **_k):
+            self._need()
+            self.calls.append(("turn", round(angle.degrees, 1)))
+            self.heading += angle.degrees
+
+        def set_head_angle(self, angle, **_k):
+            self._need()
+            self.calls.append(("head", round(angle.degrees, 1)))
+            self.head_angle_rad = angle.radians
+
+        def set_wheel_motors(self, left, right, *_a, **_k):
+            self._need()
+            self._adv()
+            if left > 0 and self.wheel <= 0:
+                self.drives += 1
+                if self.cliff_on_drive and self.drives == self.cliff_on_drive:
+                    self.cliff_at = time.time() + 0.05
+            if left < 0:
+                self.st.is_cliff_detected = False
+                self.cliff_at = None
+            self.wheel = float(left)
+            self.calls.append(("wheels", left))
+
+        def capture_single_image(self):
+            self._need()
+            from PIL import Image
+            return types.SimpleNamespace(raw_image=Image.new("RGB", (640, 360), (90, 90, 90)))
+
+    try:
+        # ---- sandbox: state in memory, files in tmp, no network, no real lock
+        patch("load_state", lambda: json.loads(json.dumps(mem)))
+
+        def _save(s):
+            snap = json.loads(json.dumps(s))
+            mem.clear()
+            mem.update(snap)
+        patch("save_state", _save)
+        lockp = os.path.join(tmp, "robot_control.lock")
+        open(lockp, "w").close()
+        patch("ROBOT_CONTROL_LOCK_PATH", lockp)
+        patch("_SDK_LOCK", _RobotControlLock(lockp))
+        battery = {"battery_level": 3, "is_on_charger_platform": True}
+        patch("get_battery", lambda cfg: dict(battery) if battery else None)
+        flags = {"music": False, "brain": False, "sentry": False, "voice_after": None, "t0": time.time()}
+        patch("music_playing", lambda cfg: flags["music"])
+        patch("brain_busy", lambda cfg: flags["brain"])
+        patch("sentry_is_active", lambda cfg, st: flags["sentry"])
+
+        def _voice(cfg, st):
+            va = flags["voice_after"]
+            return va is not None and time.time() - flags["t0"] >= va
+        patch("voice_recently_active", _voice)
+        patch("wirepod_say", lambda cfg, text: events["wirepod"].append(text) or True)
+
+        def _listen(cfg):
+            events["listen"] += 1
+            return True
+        patch("trigger_listening", _listen)
+        answer = {"value": (None, False)}
+        patch("wait_for_answer", lambda cfg, since_ts: answer["value"])
+
+        def _home(cfg, st):
+            events["home_sdk"] += 1
+            return True, "ok"
+        patch("drive_home_sdk", _home)
+        faces = {"value": []}
+        patch("recognize_faces_local", lambda cfg, p: list(faces["value"]))
+        patch("vision_describe", lambda cfg, p: (
+            "A desk with a blue mug and a desk lamp.", [("mug", None, "desk"), ("lamp", None, "left")]))
+
+        def _llm(cfg, system, user, timeout=60):
+            if "muttering" in system:
+                return "SAY: Hmm, a mug on the desk. Wonder who left it?\nNOTE: There is a blue mug on the desk."
+            if "spotted" in system:
+                return "Oh hey Alex! What's your favorite thing to paint?"
+            if "extract what a home robot" in system:
+                return "Alex loves painting watercolors on weekends."
+            return "NONE"
+        patch("_llm_internal", _llm)
+        patch("generate_question", lambda cfg, d, o: "the owner, what's that mug for?")
+        patch("extract_taught_fact", lambda cfg, q, a: None)
+
+        people = os.path.join(tmp, "people")
+        os.makedirs(people)
+        with open(os.path.join(people, "jordan.md"), "w") as f:
+            f.write("---\nagent: vector\ntags: [people, agent/vector]\nperson: Jordan\nkid: true\n"
+                    "aliases: [Jordan, Jordan L., Jordan Lee]\n---\n\n# Jordan\n\n## Who they are\n"
+                    "- a teenager in the household.\n\n## Things I've learned\n\n"
+                    "## Questions I've asked\n- 2026-10-01 [hobbies] What do you love doing? — answered\n")
+        memory_md = os.path.join(tmp, "MEMORY.md")
+        with open(memory_md, "w") as f:
+            f.write("# Vector memory\n\n## Things I have learned to recognize\n- x\n\n## Things the owner taught me\n- y\n")
+        cfg = load_config()
+        cfg.update({
+            "explore_enabled": True, "explore_interval_min": 60, "idle_required_min": 30,
+            "quiet_hours_start": "22:00", "quiet_hours_end": "08:00", "return_home_by": "21:30",
+            "explore_duration_min": 0.07, "explore_first_musing_sec": 0.3,
+            "explore_musing_interval_sec": [1.5, 1.8], "explore_face_check_seconds": 0.4,
+            "explore_speed_mmps": 400, "explore_step_cm": 8, "explore_leash_cm": 30,
+            "explore_step_weights": {"drive": 1, "head": 0, "turn": 0, "pause": 0},
+            "explore_hard_timeout_margin_sec": 20, "ask_owner_probability": 0.0,
+            "people_notes_dir": people, "vector_memory_path": memory_md,
+            "face_current_people_path": os.path.join(tmp, "current_people.json"),
+            "recent_observation_path": os.path.join(tmp, "recent_observation.txt"),
+            "mood_path": os.path.join(tmp, "mood.json"),
+            "music_log_path": os.path.join(tmp, "music.log"),
+            "explore_trigger_path": os.path.join(tmp, "data", "explore_now"),
+            "people_note_aliases": {"jordan lee": "jordan"},
+        })
+
+        tz = ZoneInfo(cfg.get("timezone", "America/New_York"))
+
+        def at(h, m=0):
+            return datetime.now(tz).replace(hour=h, minute=m, second=0, microsecond=0).timestamp()
+
+        # ---- A. geometry
+        check("face right of centre -> negative (clockwise) turn", _bbox_turn_degrees(500, 60, 640, 90) < -20)
+        check("centred face -> ~0 turn", abs(_bbox_turn_degrees(290, 60, 640, 90)) < 0.5)
+        check("image edge with 90 deg FOV -> ~45 deg", abs(abs(_bbox_turn_degrees(620, 40, 640, 90)) - 45) < 1)
+        check("face above centre -> raise head", _bbox_head_delta_degrees(20, 60, 360, 50) > 5)
+
+        # ---- B. gates
+        t = at(14)
+        mem.clear()
+        mem["explore_next_eligible_at"] = t + 600
+        ok, why, _ = explore_gate(cfg, mem, t, False)
+        check("cadence blocks a scheduled run (%s)" % why, not ok and why.startswith("cadence"))
+        ok, _, info = explore_gate(cfg, mem, t, False, forced=True)
+        check("one-shot trigger bypasses cadence", ok and info["on_charger"] is True)
+        mem["explore_next_eligible_at"] = t - 1
+        mem["last_seen_voice_activity_ts"] = t - 10 * 60
+        ok, why, _ = explore_gate(cfg, mem, t, False)
+        check("talked to 10 min ago blocks (%s)" % why, not ok and "talked to" in why)
+        check("...but not a one-shot trigger", explore_gate(cfg, mem, t, False, forced=True)[0])
+        mem["last_seen_voice_activity_ts"] = t - 40 * 60
+        check("idle 40 min -> eligible", explore_gate(cfg, mem, t, False)[0])
+        with open(cfg["mood_path"], "w") as f:
+            json.dump({"last_interaction_ts": t - 5 * 60}, f)
+        check("brain mood.json interaction 5 min ago blocks", not explore_gate(cfg, mem, t, False)[0])
+        os.remove(cfg["mood_path"])
+        check("voice active right now blocks even a trigger", not explore_gate(cfg, mem, t, True, forced=True)[0])
+        check("quiet hours (23:00) block even a trigger", not explore_gate(cfg, mem, at(23), False, forced=True)[0])
+        check("before 08:00 blocked", not explore_gate(cfg, mem, at(7, 30), False)[0])
+        check("after return_home_by 21:30 blocks scheduled", not explore_gate(cfg, mem, at(21, 45), False)[0])
+        flags["sentry"] = True
+        check("sentry active blocks scheduled", not explore_gate(cfg, mem, t, False)[0])
+        flags["sentry"] = False
+        flags["music"] = True
+        check("music blocks even a trigger", not explore_gate(cfg, mem, t, False, forced=True)[0])
+        flags["music"] = False
+        with open(cfg["music_log_path"], "w") as f:
+            f.write("x\n")
+        check("music.log touched < 5 min ago blocks", not explore_gate(cfg, mem, t, False)[0])
+        os.utime(cfg["music_log_path"], (time.time() - 900, time.time() - 900))
+        check("music.log 15 min old is fine", explore_gate(cfg, mem, t, False)[0])
+        battery.update(battery_level=1)
+        check("battery level 1 (low) blocks", not explore_gate(cfg, mem, t, False, forced=True)[0])
+        battery.update(battery_level=2, is_on_charger_platform=False)
+        ok, _, info = explore_gate(cfg, mem, t, False)
+        check("battery nominal off-charger allowed", ok and info["on_charger"] is False)
+        battery.update(battery_level=3, is_on_charger_platform=True)
+        holder = open(lockp, "r+")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        ok, why, _ = explore_gate(cfg, mem, t, False, forced=True)
+        check("robot_control.lock held elsewhere blocks (%s)" % why, not ok and "lock" in why)
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+        # ---- C. self-talk + opener rules
+        say, note = _parse_self_talk("SAY: Hmm, is that box still there?\nNOTE: NONE", cfg)
+        check("self-talk never ends in a question", say and "?" not in say)
+        check("NOTE: NONE -> no note", note is None)
+        check("self-talk naming the owner rejected", _clean_self_talk("the owner left his mug again.", cfg) is None)
+        check("self-talk addressing 'you' rejected", _clean_self_talk("Hey you, nice lamp.", cfg) is None)
+        check("plain musing kept", _clean_self_talk("That lamp has seen things.", cfg) == "That lamp has seen things.")
+        check("valid opener kept",
+              _clean_opener("Oh hey Alex! What's the best thing you cooked lately?", "Alex", cfg))
+        check("opener without the name rejected", _clean_opener("Hey there! What's up?", "Alex", cfg) is None)
+        check("opener without a question rejected", _clean_opener("Oh hey Alex!", "Alex", cfg) is None)
+        check("opener the proxy would strip rejected",
+              _clean_opener("Hi Alex. Want to chat?", "Alex", cfg) is None)
+
+        # ---- D. notes + topics
+        kid = load_person(cfg, "Jordan Lee")
+        check("alias 'Jordan Lee' -> jordan.md, kid flag", kid["path"] and kid["path"].endswith("jordan.md") and kid["kid"])
+        check("answered topic not asked again", all(pick_person_topic(kid)[0] != "hobbies" for _ in range(30)))
+        check("kid topics used for kids", pick_person_topic(kid)[0] in {k for k, _ in PEOPLE_TOPICS_KID})
+        p = ensure_person_note(cfg, "Alex")
+        check("new person note created", p and os.path.basename(p) == "alex.md")
+        check("fact appended", append_person_fact(cfg, "Alex", "Alex loves hiking."))
+        check("near-duplicate fact skipped", not append_person_fact(cfg, "Alex", "Alex loves hiking"))
+        record_person_question(cfg, "Alex", "hobbies", "What do you love doing?", True)
+        ar = load_person(cfg, "Alex")
+        check("question recorded + parsed", ar["asked"] and ar["asked"][-1]["status"] == "answered")
+        with open(p) as f:
+            body = f.read()
+        check("note sections intact", body.index(PERSON_FACTS) < body.index("loves hiking") < body.index(PERSON_ASKED))
+        check("distilled fact with a phone number rejected",
+              _SENSITIVE_RE.search("Alex's number is 704-555-1234") is not None)
+
+        # ---- E. session 1: from the charger, cliff on 2nd drive, musings, back home
+        mem.clear()
+        mem["explore_next_eligible_at"] = time.time() - 1
+        r1 = _FakeRobot(on_charger=True, cliff_on_drive=2)
+        info = {"battery_level": 3, "on_charger": True}
+        t0 = time.time()
+        out = run_explore_session(cfg, dict(mem), t0, info, robot_factory=lambda c: r1)
+        says = [c[1] for c in r1.calls if isinstance(c, tuple) and c[0] == "say"]
+        check("session 1 outcome ok (%s)" % out, out == "ok")
+        check("drove off the charger, stock look-around ran", "drive_off" in r1.calls and "look_around" in r1.calls)
+        check("cliff stopped the wheels and backed off",
+              ("wheels", -30) in r1.calls and r1.st.is_cliff_detected is False)
+        check("said musings, none of them questions", len(says) >= 2 and all("?" not in s for s in says))
+        with open(memory_md) as f:
+            mtxt = f.read()
+        check("observation NOTE saved under the explore heading",
+              EXPLORE_SECTION_NOTICED in mtxt and "blue mug" in mtxt)
+        check("returned to the charger (started there)", "drive_on" in r1.calls)
+        check("disconnected + lock released", r1.calls[-1] == "disconnect" and not _SDK_LOCK._tlock.locked())
+        check("next explore ~60 min out", abs(mem.get("explore_next_eligible_at", 0) - (t0 + 3600)) < 5)
+        check("no mic opened, nothing via wire-pod", events["listen"] == 0 and not events["wirepod"])
+        check("leash respected (<= 30 cm + one step)",
+              math.hypot(r1.x - 100, r1.y) <= 300 + 80 + 5)
+
+        # ---- F. session 2: known face -> turn, greet, hand over, learn
+        faces["value"] = [{"name": "Alex", "slug": "alex", "score": 0.61, "bbox": [500, 40, 80, 100]}]
+        answer["value"] = ("I love painting watercolors on weekends", False)
+        r2 = _FakeRobot(on_charger=True)
+        out = run_explore_session(cfg, dict(mem), time.time(), info, robot_factory=lambda c: r2)
+        turns = [c[1] for c in r2.calls if isinstance(c, tuple) and c[0] == "turn"]
+        heads = [c[1] for c in r2.calls if isinstance(c, tuple) and c[0] == "head"]
+        says = [c[1] for c in r2.calls if isinstance(c, tuple) and c[0] == "say"]
+        check("turned toward the face on the right (negative angle)", any(a < -10 for a in turns))
+        check("raised the head toward the face", heads and heads[-1] > 10)
+        check("greeted by name with a question", any("Alex" in s and s.endswith("?") for s in says))
+        check("did NOT drive home after greeting (battery fine)", "drive_on" not in r2.calls)
+        check("handed over to wire-pod (trigger_wake_word)", events["listen"] == 1)
+        with open(os.path.join(people, "alex.md")) as f:
+            body = f.read()
+        check("answer distilled into Alex's note", "watercolors" in body)
+        check("question logged as answered", "— answered" in body.split(PERSON_ASKED)[1])
+        check("greet cooldown recorded", "Alex" in (mem.get("explore_greeted_at") or {}))
+        check("off-dock watch set (he stayed out)", mem.get("explore_off_dock_watch") is True)
+
+        # ---- G. session 3: same face again within 30 min -> no greeting
+        r3 = _FakeRobot(on_charger=False)
+        run_explore_session(cfg, dict(mem), time.time(), {"battery_level": 3, "on_charger": False},
+                            robot_factory=lambda c: r3)
+        says = [c[1] for c in r3.calls if isinstance(c, tuple) and c[0] == "say"]
+        check("no second greeting inside greet_cooldown_min", not any("Alex" in s for s in says))
+        check("started off the dock + battery fine -> no drive home", "drive_on" not in r3.calls)
+
+        # ---- H. session 4: someone talks -> stop + release immediately
+        faces["value"] = []
+        flags["t0"] = time.time()
+        flags["voice_after"] = 0.8
+        r4 = _FakeRobot(on_charger=True)
+        out = run_explore_session(cfg, dict(mem), time.time(), info, robot_factory=lambda c: r4)
+        flags["voice_after"] = None
+        check("voice interrupt -> outcome 'voice' (%s)" % out, out == "voice")
+        check("wheels stopped + disconnected on voice", ("wheels", 0) in r4.calls and "disconnect" in r4.calls)
+        check("pending go-home queued for later", mem.get("explore_return_pending") is True)
+
+        # ---- I. junk answer ignored
+        faces["value"] = [{"name": "Jordan", "slug": "jordan", "score": 0.55, "bbox": [300, 100, 60, 80]}]
+        answer["value"] = ("the", False)
+        r5 = _FakeRobot(on_charger=False)
+        run_explore_session(cfg, dict(mem), time.time(), {"battery_level": 3, "on_charger": False},
+                            robot_factory=lambda c: r5)
+        with open(os.path.join(people, "jordan.md")) as f:
+            body = f.read()
+        check("kid greeted, junk transcript not saved, logged 'no answer'",
+              "— no answer" in body and len(_note_section_bullets(body, PERSON_FACTS)) == 0)
+
+        # ---- J. scheduler + one-shot trigger + pending return
+        faces["value"] = []
+        mem["explore_next_eligible_at"] = time.time() + 3000
+        mem["last_seen_voice_activity_ts"] = time.time() - 60
+        check("scheduler idle before the hour (no trigger)",
+              maybe_run_explore(cfg, mem, at(14), False, robot_factory=lambda c: _FakeRobot()) is False)
+        request_explore_now(cfg)
+        check("trigger file written", explore_trigger_pending(cfg) is not None)
+        ran = maybe_run_explore(cfg, mem, at(14), False, robot_factory=lambda c: _FakeRobot())
+        check("one-shot trigger runs a session now and is consumed", ran and explore_trigger_pending(cfg) is None)
+        mem["explore_return_pending"] = True
+        mem["last_seen_voice_activity_ts"] = time.time() - 600
+        battery.update(battery_level=2, is_on_charger_platform=False)
+        before = events["home_sdk"]
+        maybe_explore_return(cfg, mem, time.time(), False)
+        check("pending return -> drive_home_sdk", events["home_sdk"] == before + 1)
+        battery.update(is_on_charger_platform=True)
+        maybe_explore_return(cfg, mem, time.time(), False)
+        check("docked -> return state cleared", not load_state().get("explore_return_pending"))
+
+        # ---- K. presence for the occasional question
+        with open(cfg["face_current_people_path"], "w") as f:
+            json.dump([{"name": "the owner", "score": 0.5, "last_seen_epoch": time.time()}], f)
+        check("the owner present via face recognition", owner_present(cfg, {})[0])
+        os.remove(cfg["face_current_people_path"])
+        check("the owner present via HA home", owner_present(cfg, {SENTRY_HOME_KEY: True})[0])
+        check("nobody -> no question", not owner_present(cfg, {SENTRY_HOME_KEY: False})[0])
+
+        # ---- L. wakeable sleep
+        EXPLORE_WAKE.set()
+        t1 = time.time()
+        _sleep_with_wake(cfg, 30)
+        check("main-loop sleep wakes on /explore_now", time.time() - t1 < 1)
+    finally:
+        for k, v in saved.items():
+            g[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("SELFTEST", "PASSED" if results["ok"] else "FAILED")
+    return results["ok"]
+
+
 def main():
     log.info(
         "Curious Vector starting up (rework 2026-09-28: single connect/cycle, "
@@ -2611,6 +4968,37 @@ def main():
         CIRCUIT_BREAKER_FAILURE_THRESHOLD,
         CIRCUIT_BREAKER_PAUSE_SECONDS,
     )
+    _sentry_stop_event = threading.Event()
+    threading.Thread(
+        target=presence_poll_loop, args=(load_config, _sentry_stop_event),
+        daemon=True, name="sentry-presence",
+    ).start()
+    threading.Thread(
+        target=sentry_log_watch_loop, args=(load_config, _sentry_stop_event),
+        daemon=True, name="sentry-logwatch",
+    ).start()
+    threading.Thread(
+        target=start_sentry_control_server,
+        daemon=True, name="sentry-http-control",
+    ).start()
+    threading.Thread(
+        target=safety_log_watch_loop, args=(load_config, _sentry_stop_event),
+        daemon=True, name="safety-logwatch",
+    ).start()
+    log.info("sentry: presence poller + log watcher + HTTP control threads started (+ safety-logwatch)")
+    try:
+        _c = load_config()
+        log.info(
+            "explore: hourly explore mode enabled=%s interval=%smin idle_required=%smin duration=%smin "
+            "drive=%s greet_known_faces=%s ask_owner_probability=%s legacy_question_cycle=%s",
+            _c.get("explore_enabled", True), _c.get("explore_interval_min", 60), _c.get("idle_required_min", 30),
+            _c.get("explore_duration_min", 4), _c.get("explore_drive_enabled", True),
+            _c.get("explore_greet_known_faces", True), _c.get("ask_owner_probability", 0.2),
+            _c.get("curious_question_cycle_enabled", False),
+        )
+    except Exception:
+        pass
+
     poll_s = IDLE_POLL_LADDER[0]
     while True:
         cfg = load_config()
@@ -2630,8 +5018,1124 @@ def main():
             except ValueError:
                 poll_s = IDLE_POLL_LADDER[0]
 
-        time.sleep(poll_s)
+        _sleep_with_wake(cfg, poll_s)
+
+
+# ---------------------------------------------------------------------------
+# SENTRY MODE (2026-09-29, the owner: wire phone presence -> auto Vector sentry)
+#
+# Two independent background threads, started once from main() alongside
+# the existing poll loop (NOT folded into run_cycle()'s idle-backoff ladder,
+# since that ladder can back off to 300s and both presence + sound-event
+# response need to stay on their own fixed, fast cadence):
+#
+#   1. presence_poll_loop() -- every `presence_poll_seconds` (default 60),
+#      reads person.owner's state from Home Assistant's REST API (token
+#      read from `ha_token_path`, never baked into the image/config).
+#      Debounces `presence_debounce_readings` (default 2) CONSISTENT
+#      readings before flipping home/away, so one flaky/unknown GPS fix
+#      can't flap sentry on/off. On away->home it also fires the
+#      "Welcome back" arrival greeting (see _sentry_arrival_greet_async).
+#
+#   2. sentry_log_watch_loop() -- tails ~/vector-logs/vector.log
+#      (mounted read-only at `sentry_vector_log_path`) every
+#      `sentry_log_poll_seconds` (default 3) for the robot's own built-in
+#      `@robot.reacted_to_sound` (ReactToSound) behavior firing -- chosen
+#      as the sentry trigger because it's by far the most reliable signal
+#      in this robot's syslog (1119 occurrences seen in a ~24h sample vs.
+#      18 for ReactToMotion, 0 for any AudioDirection/MicDirection field --
+#      so there is no per-event sound-direction data available from the
+#      log, and capture deliberately does NOT try to turn the robot: "stay
+#      put" per the fallback the task spec allows). When sentry is active
+#      (see sentry_is_active()), not quiet-houred, and not rate-limited,
+#      it calls _sentry_maybe_capture().
+#
+# SDK connection safety: sentry's own capture (_sentry_capture_and_detect)
+# opens the SAME kind of single, short-lived anki_vector.Robot() connection
+# capture_image()/capture_night_images()/drive_home_sdk() already use (see
+# those functions' docstrings above) -- connect, do the minimal work,
+# ALWAYS disconnect in `finally`. The robot has ~436MB RAM and can only
+# tolerate ONE SDK connection at a time system-wide, so all four of these
+# connection sites now acquire the same module-level `_SDK_LOCK` before
+# calling anki_vector.Robot(...) and release it in their `finally` --
+# whichever one gets there first wins, everyone else politely skips
+# (outcome="skip", doesn't trip the circuit breaker) and retries on the
+# next poll/trigger instead of queueing behind a held connection.
+#
+# Sentry NEVER wanders and NEVER drives -- "stay docked" per spec, no
+# drive_straight/turn_in_place/drive_on_charger calls anywhere in this
+# section. It reuses get_battery()/music_playing()/brain_busy()/
+# voice_recently_active()/_voice_watch_loop()/_run_with_hard_timeout()/
+# _save_camera_image()/record_face_sightings()/_record_capture_outcome()/
+# in_quiet_hours() from the existing daemon rather than duplicating any of
+# that fail-safe logic.
+# ---------------------------------------------------------------------------
+
+SENTRY_HOME_KEY = "sentry_last_known_home"          # bool, debounced
+SENTRY_ACTIVE_SINCE_KEY = "sentry_active_since"      # epoch or None
+SENTRY_CAPTURE_TIMES_KEY = "sentry_capture_times"    # list[epoch], rate limit
+SENTRY_LOG_OFFSET_KEY = "sentry_log_offset"          # byte offset into vector.log
+SENTRY_PRESENCE_POLL_AT_KEY = "sentry_last_presence_poll_at"
+SENTRY_DEBOUNCE_VALUE_KEY = "sentry_debounce_value"  # last raw reading seen
+SENTRY_DEBOUNCE_COUNT_KEY = "sentry_debounce_count"
+
+SENTRY_SOUND_TS_RE = re.compile(
+    r"^(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2}) "
+    r"(?P<h>\d{2}):(?P<mi>\d{2}):(?P<s>\d{2})\.(?P<ms>\d+)"
+)
+
+
+def _load_ha_token(cfg):
+    """Reads the HA long-lived token from a file (never from config.json,
+    never baked into the image). Bind-mounted alongside curious.py's own
+    /app dir; kept 0400 on the host for defense in depth even though the
+    container itself runs as root (root bypasses unix perms regardless --
+    the real boundary is that this file lives outside the image)."""
+    path = cfg.get("ha_token_path", "/app/.ha_token")
+    try:
+        with open(path) as f:
+            tok = f.read().strip()
+        return tok or None
+    except Exception as e:
+        log.warning("sentry: could not read HA token at %s: %s", path, e)
+        return None
+
+
+def ha_get_state(cfg, entity_id):
+    token = _load_ha_token(cfg)
+    if not token:
+        return None
+    url = f"{cfg.get('ha_url', 'http://127.0.0.1:8123')}/api/states/{entity_id}"
+    timeout = cfg.get("http_timeout_seconds", 15)
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log.warning("sentry: ha_get_state(%s) failed: %s", entity_id, e)
+        return None
+
+
+def ha_call_service(cfg, domain, service, payload):
+    token = _load_ha_token(cfg)
+    if not token:
+        log.warning("sentry: no HA token -- cannot call %s.%s", domain, service)
+        return False
+    url = f"{cfg.get('ha_url', 'http://127.0.0.1:8123')}/api/services/{domain}/{service}"
+    timeout = cfg.get("http_timeout_seconds", 15)
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+        return True
+    except Exception as e:
+        log.warning("sentry: ha_call_service(%s.%s) failed: %s", domain, service, e)
+        return False
+
+
+def _presence_reading_to_home(raw_state):
+    """Maps a person.<x> HA state string to True (home) / False (away) /
+    None (unverifiable -- 'unknown', 'unavailable', or no reading at all).
+    None readings are never debounce-counted -- they neither confirm nor
+    deny a transition, so they're simply skipped rather than treated as
+    "away" (a phone that hasn't reported a GPS fix yet is not evidence
+    the owner left)."""
+    if raw_state is None:
+        return None
+    if raw_state in ("unknown", "unavailable"):
+        return None
+    if raw_state == "home":
+        return True
+    return False  # "not_home" or any other zone name -> not the home zone
+
+
+def sentry_is_active(cfg, state):
+    """Effective sentry on/off, folding in the manual override
+    (`sentry_manual_override`: "auto" (default, follows presence) / "on"
+    (forced on regardless of presence) / "off" (forced off regardless)).
+    "auto" activates whenever the debounced presence reading says away
+    (or hasn't been established at all yet -- fail-safe default is OFF,
+    not on, so an HA outage before the first successful reading can never
+    make sentry start snapping unexpected photos of the owner's own house)."""
+    if not cfg.get("sentry_enabled", True):
+        return False
+    override = cfg.get("sentry_manual_override", "auto")
+    if override == "off":
+        return False
+    if override == "on":
+        return True
+    return state.get(SENTRY_HOME_KEY, True) is False
+
+
+# --- SENTRY VOICE CONTROL HTTP ENDPOINT (added 2026-09-29, Hermes) ---
+# Small stdlib-only HTTP server, 127.0.0.1-only, so wire-pod's
+# sentry_cmd_custom custom intent (see vector-pod's
+# pkg/wirepod/ttr/sentrycmd.go) can flip sentry_manual_override by voice
+# without editing config.json by hand or restarting this container.
+# GET /sentry?mode=on|off|auto persists the override into config.json --
+# the SAME key sentry_is_active() already reads via load_config() on
+# every poll/decision (presence_poll_loop, sentry_log_watch_loop,
+# run_cycle all call cfg_getter()/load_config() fresh each cycle) -- so
+# there's no second source of truth and no extra hot-reload plumbing
+# needed. Speaking the confirmation is the CALLER's job (sentrycmd.go
+# does it via wire-pod's own sayText, reusing wire-pod's existing SDK
+# connection -- see that file's header for why never a second
+# connection) so this endpoint stays side-effect-minimal: it only ever
+# writes config.json, and is independently curl-testable without ever
+# making the robot talk or move.
+SENTRY_CONTROL_HOST = "127.0.0.1"
+SENTRY_CONTROL_PORT = 8790
+SENTRY_VALID_MODES = ("on", "off", "auto")
+
+_config_write_lock = threading.Lock()
+
+
+def set_sentry_override(mode):
+    """Persists mode into config.json's sentry_manual_override key,
+    atomically (tmp + os.replace, same pattern as save_state()) and under
+    a lock (protects against two concurrent WRITERS interleaving --
+    readers never see a half-written file because of the atomic
+    replace). Raises ValueError for an invalid mode; does nothing else on
+    disk in that case."""
+    if mode not in SENTRY_VALID_MODES:
+        raise ValueError(f"invalid mode {mode!r}, must be one of {SENTRY_VALID_MODES}")
+    with _config_write_lock:
+        cfg = load_config()
+        cfg["sentry_manual_override"] = mode
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+        # 2026-09-29 cliffsafe: config.json kept becoming root-owned because
+        # this container runs as root -- every write now re-chowns it back
+        # to the host user (uid 1000), same pattern _sentry_log_event/_fix_owner already
+        # use for the metrics files, so host-side readers/editors keep
+        # working without sudo.
+        _fix_owner(CONFIG_PATH)
+    log.warning("SENTRY: manual override set to %r via HTTP control endpoint", mode)
+
+
+class _SentryControlHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        log.info("sentry-http: " + fmt, *args)
+
+    def _write_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/explore_now":
+            try:
+                request_explore_now(load_config())
+                self._write_json(200, {"ok": True, "queued": True,
+                                       "note": "runs at the next poll once the safety gates pass "
+                                               "(voice quiet, no music, lock free, battery ok, daytime)"})
+            except Exception as e:
+                log.warning("explore-http: queueing explore_now failed: %s", e)
+                self._write_json(500, {"ok": False, "error": "internal error"})
+            return
+        if parsed.path == "/explore_status":
+            try:
+                self._write_json(200, explore_status(load_config()))
+            except Exception as e:
+                log.warning("explore-http: status failed: %s", e)
+                self._write_json(500, {"ok": False, "error": "internal error"})
+            return
+        if parsed.path != "/sentry":
+            self._write_json(404, {"ok": False, "error": "not found"})
+            return
+        qs = urllib.parse.parse_qs(parsed.query)
+        mode = (qs.get("mode") or [""])[0].strip().lower()
+        try:
+            set_sentry_override(mode)
+        except ValueError as e:
+            self._write_json(400, {"ok": False, "error": str(e)})
+            return
+        except Exception as e:
+            log.warning("sentry-http: set_sentry_override(%r) failed: %s", mode, e)
+            self._write_json(500, {"ok": False, "error": "internal error"})
+            return
+        self._write_json(200, {"ok": True, "sentry_manual_override": mode})
+
+
+def start_sentry_control_server():
+    """Run forever (daemon thread, started once from main()). Binds
+    127.0.0.1 only -- this is a same-host control channel for wire-pod's
+    custom-intent handler (both containers run --network host, the
+    host-networking Docker rule, so 127.0.0.1 from vector-pod reaches
+    this directly), never meant to be reachable off-box."""
+    server = http.server.ThreadingHTTPServer(
+        (SENTRY_CONTROL_HOST, SENTRY_CONTROL_PORT), _SentryControlHandler
+    )
+    log.info(
+        "sentry: control HTTP server listening on %s:%d",
+        SENTRY_CONTROL_HOST, SENTRY_CONTROL_PORT,
+    )
+    server.serve_forever()
+
+
+def _sentry_log_event(cfg, event):
+    path = cfg.get("sentry_events_log_path", "/mnt/vector-brain/metrics/sentry.jsonl")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(event) + "\n")
+        _fix_owner(path)
+    except Exception as e:
+        log.warning("sentry: failed writing event log: %s", e)
+
+
+def _sentry_read_events_since(cfg, since_ts):
+    path = cfg.get("sentry_events_log_path", "/mnt/vector-brain/metrics/sentry.jsonl")
+    events = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("ts", 0) >= since_ts:
+                    events.append(e)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning("sentry: failed reading event log: %s", e)
+    return events
+
+
+def _sentry_activate(cfg, state, now, reason):
+    state[SENTRY_ACTIVE_SINCE_KEY] = now
+    save_state(state)
+    _sentry_log_event(cfg, {"ts": now, "type": "sentry_activated", "reason": reason})
+    log.warning("SENTRY: activated (%s)", reason)
+
+
+def _sentry_arrival_greet_async(cfg, state, since_ts):
+    """Spawned (daemon thread, fire-and-forget) right when presence flips
+    to home. Waits sentry_arrival_min_delay_seconds so the owner's actually
+    had a moment to walk in, then polls the voice gate (fail-closed, same
+    as every other wirepod_say call site) until it's clear or
+    sentry_arrival_max_wait_seconds elapses, then speaks a one-line
+    summary of what happened while he was away (built from this away
+    session's sentry.jsonl events) via wirepod_say -- never opens an SDK
+    connection of its own."""
+    min_delay = cfg.get("sentry_arrival_min_delay_seconds", 15)
+    max_wait = cfg.get("sentry_arrival_max_wait_seconds", 300)
+    time.sleep(min_delay)
+
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            busy = voice_recently_active(cfg, load_state())
+        except Exception as e:
+            log.warning("sentry: arrival voice-gate check failed (%s) -- treating as busy", e)
+            busy = True
+        if not busy:
+            break
+        time.sleep(5)
+    else:
+        log.info("sentry: arrival greeting gave up waiting for voice gate to clear after %ss", max_wait)
+        return
+
+    events = _sentry_read_events_since(cfg, since_ts)
+    unknowns = [e for e in events if e.get("type") == "unknown_person_alert"]
+    if unknowns:
+        first = unknowns[0]
+        tz = ZoneInfo(cfg.get("timezone", "America/New_York")) if ZoneInfo else None
+        dt = datetime.fromtimestamp(first["ts"], tz) if tz else datetime.fromtimestamp(first["ts"])
+        hhmm = dt.strftime("%I:%M %p").lstrip("0")
+        summary = f"I saw someone at {hhmm}, check your phone."
+    else:
+        summary = "It was quiet."
+
+    wirepod_say(cfg, f"Welcome back! {summary}")
+
+
+def _sentry_deactivate(cfg, state, now, reason):
+    since = state.get(SENTRY_ACTIVE_SINCE_KEY) or now
+    state[SENTRY_ACTIVE_SINCE_KEY] = None
+    save_state(state)
+    _sentry_log_event(cfg, {"ts": now, "type": "sentry_deactivated", "reason": reason})
+    log.warning("SENTRY: deactivated (%s)", reason)
+    threading.Thread(
+        target=_sentry_arrival_greet_async, args=(cfg, state, since), daemon=True,
+        name="sentry-arrival-greet",
+    ).start()
+
+
+def presence_poll_loop(cfg_getter, stop_event):
+    """Background daemon thread, started once from main(). Fixed
+    presence_poll_seconds cadence, independent of run_cycle()'s own
+    idle-backoff ladder (which can back off to 300s -- presence needs to
+    stay responsive). Debounces presence_debounce_readings (default 2)
+    CONSISTENT non-null readings before flipping SENTRY_HOME_KEY and
+    firing the activate/deactivate side effects."""
+    log.info("sentry: presence_poll_loop starting")
+    while not stop_event.wait(1):
+        try:
+            cfg = cfg_getter()
+            interval = cfg.get("presence_poll_seconds", 60)
+            state = load_state()
+            now = time.time()
+            last_poll = state.get(SENTRY_PRESENCE_POLL_AT_KEY, 0)
+            if now - last_poll < interval:
+                continue
+            state[SENTRY_PRESENCE_POLL_AT_KEY] = now
+
+            entity_id = cfg.get("ha_person_entity", "person.owner")
+            result = ha_get_state(cfg, entity_id)
+            raw = result.get("state") if result else None
+            is_home = _presence_reading_to_home(raw)
+            log.info("sentry: presence poll %s -> state=%r resolved=%r", entity_id, raw, is_home)
+
+            if is_home is None:
+                save_state(state)
+                continue
+
+            if state.get(SENTRY_DEBOUNCE_VALUE_KEY) == is_home:
+                state[SENTRY_DEBOUNCE_COUNT_KEY] = state.get(SENTRY_DEBOUNCE_COUNT_KEY, 0) + 1
+            else:
+                state[SENTRY_DEBOUNCE_VALUE_KEY] = is_home
+                state[SENTRY_DEBOUNCE_COUNT_KEY] = 1
+
+            debounce_n = cfg.get("presence_debounce_readings", 2)
+            was_home = state.get(SENTRY_HOME_KEY, True)
+
+            if state[SENTRY_DEBOUNCE_COUNT_KEY] >= debounce_n and is_home != was_home:
+                state[SENTRY_HOME_KEY] = is_home
+                save_state(state)
+                if is_home:
+                    _sentry_deactivate(cfg, state, now, "presence: home")
+                else:
+                    _sentry_activate(cfg, state, now, "presence: away")
+            else:
+                save_state(state)
+        except Exception as e:
+            log.exception("sentry: presence_poll_loop iteration failed: %s", e)
+
+
+def _sentry_rate_limited(cfg, state, now):
+    times = [t for t in state.get(SENTRY_CAPTURE_TIMES_KEY, []) if now - t < 3600]
+    state[SENTRY_CAPTURE_TIMES_KEY] = times
+    per_minute = [t for t in times if now - t < 60]
+    if len(per_minute) >= cfg.get("sentry_capture_max_per_minute", 1):
+        return True
+    if len(times) >= cfg.get("sentry_capture_max_per_hour", 30):
+        return True
+    return False
+
+
+def _sentry_save_to_ha_www(cfg, jpeg_path):
+    """Copies a capture into the HA www dir (bind-mounted at
+    sentry_ha_www_dir) so HA's static file server exposes it at
+    /local/vector/<file>.jpg -- works on LAN and over Tailscale alike,
+    unlike a direct link to this host's own ports."""
+    www_dir = cfg.get("sentry_ha_www_dir", "/mnt/ha-www")
+    try:
+        os.makedirs(www_dir, exist_ok=True)
+        fname = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+        dest = os.path.join(www_dir, fname)
+        shutil.copyfile(jpeg_path, dest)
+        _fix_owner(dest)
+        return fname
+    except Exception as e:
+        log.warning("sentry: could not save capture into HA www dir: %s", e)
+        return None
+
+
+def _sentry_notify_unknown_person(cfg, fname, now):
+    if not fname:
+        log.warning("sentry: unknown-person alert but no image saved -- notifying without photo")
+    tz = ZoneInfo(cfg.get("timezone", "America/New_York")) if ZoneInfo else None
+    dt = datetime.fromtimestamp(now, tz) if tz else datetime.fromtimestamp(now)
+    hhmm = dt.strftime("%H:%M")
+    service = cfg.get("ha_notify_service", "notify.mobile_app_YOUR_PHONE")
+    domain, _, svc = service.partition(".")
+    payload = {
+        "title": "Vector Sentry",
+        "message": f"Unknown person detected at {hhmm}",
+    }
+    if fname:
+        url_prefix = cfg.get("sentry_ha_www_url_prefix", "/local/vector")
+        payload["data"] = {"image": f"{url_prefix}/{fname}"}
+    ok = ha_call_service(cfg, domain, svc, payload)
+    log.info("sentry: unknown-person notify -> %s", "sent" if ok else "FAILED")
+    return ok
+
+
+def _sentry_post_to_coral(cfg, jpeg_path):
+    url = cfg.get("sentry_coral_url", "http://localhost:8095/detect?model=efficientdet_lite1&min_score=0.4")
+    timeout = cfg.get("http_timeout_seconds", 15)
+    try:
+        with open(jpeg_path, "rb") as f:
+            data = f.read()
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "image/jpeg")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log.warning("sentry: coral detect failed: %s", e)
+        return None
+
+
+def _sentry_capture_and_detect(cfg, state):
+    """ONE short-lived SDK connection (DEFAULT_PRIORITY, same as
+    capture_image()) -- connect, read visible_faces, grab 1-2 frames,
+    ALWAYS disconnect in `finally`. NEVER drives/wanders (sentry stays
+    docked per spec). Serializes against capture_image()/
+    capture_night_images()/drive_home_sdk() via the shared _SDK_LOCK --
+    only one SDK connection to the robot anywhere in this process at a
+    time. Same fail-closed voice gate (pre-connect check + continuous
+    _voice_watch_loop watcher) as every other connection site.
+
+    Returns {"paths": [...], "faces": [...]} on success, or None (skip/
+    fail/voice-interrupted/lock-busy -- caller just doesn't act this
+    trigger, next sound event tries again)."""
+    import anki_vector
+    from anki_vector.connection import ControlPriorityLevel
+
+    timeout_s = cfg.get("sentry_control_timeout_seconds", 15)
+
+    if voice_recently_active(cfg, state):
+        log.info("sentry: voice activity immediately before grab -- skipping (fail closed)")
+        return None
+
+    if not _SDK_LOCK.acquire(timeout=cfg.get("sdk_lock_wait_seconds", 3)):
+        log.info("sentry: SDK busy elsewhere (lock held) -- skipping this trigger")
+        return None
+
+    robot = anki_vector.Robot(
+        serial=cfg["robot_serial"],
+        behavior_control_level=ControlPriorityLevel.DEFAULT_PRIORITY,
+        default_logging=False,
+        enable_face_detection=True,
+    )
+    stop_watch = threading.Event()
+    abort_box = {"aborted": False}
+    result_box = {"paths": [], "faces": [], "reason": None}
+    watcher = threading.Thread(
+        target=_voice_watch_loop, args=(cfg, state, robot, stop_watch, abort_box), daemon=True,
+    )
+
+    def _do():
+        watcher.start()
+        robot.connect(timeout=min(10, timeout_s))
+        time.sleep(0.5)
+        st = robot.status
+        ok, reason = _status_ok(
+            {
+                "is_being_held": bool(st.is_being_held),
+                "are_motors_moving": bool(st.are_motors_moving),
+                "is_animating": bool(st.is_animating),
+                "is_pathing": bool(st.is_pathing),
+                "is_in_calm_power_mode": bool(st.is_in_calm_power_mode),
+            },
+            allow_calm_power_mode=True,  # sentry: docked/resting is fine, still capture
+        )
+        if not ok:
+            result_box["reason"] = reason
+            return None
+        try:
+            result_box["faces"] = [
+                {"name": (f.name or "").strip(), "face_id": f.face_id}
+                for f in robot.world.visible_faces
+            ]
+        except Exception as e:
+            log.debug("sentry: visible_faces read failed (non-fatal): %s", e)
+        # "turn toward the sound direction if available (else stay put)" --
+        # vector.log carries no per-event direction field for
+        # @robot.reacted_to_sound (confirmed: 0 AudioDirection/MicDirection
+        # lines in this robot's syslog), so direction is never available
+        # here -- sentry always stays put, never drives/turns.
+        n_shots = 2 if cfg.get("sentry_two_shots", True) else 1
+        for i in range(n_shots):
+            image = robot.camera.capture_single_image()
+            if image is not None:
+                result_box["paths"].append(_save_camera_image(image))
+            if i == 0 and n_shots > 1:
+                time.sleep(0.3)
+        return True
+
+    try:
+        ok, timed_out = _run_with_hard_timeout(_do, timeout_s)
+        stop_watch.set()
+        try:
+            record_face_sightings(cfg, state, result_box["faces"])
+        except Exception as e:
+            log.warning("sentry: record_face_sightings failed (non-fatal): %s", e)
+
+        if abort_box["aborted"]:
+            log.info("sentry: aborted mid-hold due to voice activity -- releasing")
+            return None
+        if timed_out:
+            log.warning("sentry: HARD TIMEOUT after %ss -- forcing disconnect/release", timeout_s)
+            _record_capture_outcome(state, time.time(), "fail")
+            return None
+        if result_box["reason"]:
+            log.info("sentry: capture skipped -- %s", result_box["reason"])
+            _record_capture_outcome(state, time.time(), "skip")
+            return None
+        if not result_box["paths"]:
+            log.warning("sentry: connected but no image returned")
+            _record_capture_outcome(state, time.time(), "fail")
+            return None
+        _record_capture_outcome(state, time.time(), "ok")
+        log.info("sentry: captured %d frame(s)", len(result_box["paths"]))
+        return {"paths": result_box["paths"], "faces": result_box["faces"]}
+    finally:
+        stop_watch.set()
+        try:
+            robot.disconnect()
+        except Exception:
+            pass
+        _SDK_LOCK.release()
+
+
+def _sentry_handle_capture(cfg, state, trigger, trigger_ts, capture):
+    now = time.time()
+    path_used = capture["paths"][0]
+    detection = _sentry_post_to_coral(cfg, path_used)
+    if detection is None:
+        _sentry_log_event(cfg, {
+            "ts": now, "trigger": trigger, "trigger_ts": trigger_ts,
+            "type": "capture_no_detection_result",
+        })
+        return
+
+    dets = detection.get("detections", [])
+    min_score = cfg.get("sentry_person_min_score", 0.5)
+    persons = [d for d in dets if d.get("label") == "person" and d.get("score", 0) >= min_score]
+    animals = [d for d in dets if d.get("label") in ("cat", "dog")]
+    named_faces = sorted({f["name"] for f in capture.get("faces", []) if f.get("name")})
+
+    event = {
+        "ts": now, "trigger": trigger, "trigger_ts": trigger_ts,
+        "detections": dets, "faces": capture.get("faces", []),
+        "type": "capture",
+    }
+    if animals:
+        log.info("sentry: animal detected (%s) -- logging only, no alert", [a["label"] for a in animals])
+        event["animal_labels"] = [a["label"] for a in animals]
+
+    if persons:
+        if named_faces:
+            log.info("sentry: known face seen (%s) -- logging only", named_faces)
+            event["type"] = "known_person"
+            event["known_names"] = named_faces
+        else:
+            log.warning("sentry: UNKNOWN PERSON detected (score up to %.2f) -- alerting",
+                        max((d.get("score", 0) for d in persons), default=0))
+            www_fname = _sentry_save_to_ha_www(cfg, path_used)
+            _sentry_notify_unknown_person(cfg, www_fname, now)
+            event["type"] = "unknown_person_alert"
+            event["ha_www_file"] = www_fname
+
+    _sentry_log_event(cfg, event)
+
+
+def _sentry_maybe_capture(cfg, state, trigger_ts, trigger):
+    now = time.time()
+    if _sentry_rate_limited(cfg, state, now):
+        log_skip("sentry: capture rate-limited", 30)
+        save_state(state)
+        return
+
+    battery = get_battery(cfg)
+    if battery is None:
+        log_skip("sentry: could not verify battery -- skipping capture (fail safe)", 60)
+        return
+    level = battery.get("battery_level")
+    on_charger = battery.get("is_on_charger_platform")
+    low_level = cfg.get("sentry_battery_low_level", cfg.get("battery_low_level", 5))
+    if level is not None and level <= low_level and not on_charger:
+        log_skip("sentry: battery low -- skipping capture", 300)
+        return
+
+    if music_playing(cfg):
+        log_skip("sentry: music playing -- skipping capture", 30)
+        return
+    if brain_busy(cfg):
+        log_skip("sentry: brain-proxy busy -- skipping capture", 30)
+        return
+
+    capture = _sentry_capture_and_detect(cfg, state)
+    state.setdefault(SENTRY_CAPTURE_TIMES_KEY, []).append(now)
+    save_state(state)
+    if capture is None:
+        return
+    _sentry_handle_capture(cfg, state, trigger, trigger_ts, capture)
+
+
+def sentry_log_watch_loop(cfg_getter, stop_event):
+    """Background daemon thread, started once from main(). Tails
+    vector.log for the sentry trigger pattern (see module-level comment
+    block above for why @robot.reacted_to_sound was chosen). Tracks a
+    persisted byte offset (state.json) so a container restart resumes
+    from where it left off instead of either replaying the whole log or
+    losing the current position; a shrunk/rotated file (offset > current
+    size) resets to end-of-file rather than erroring."""
+    log.info("sentry: sentry_log_watch_loop starting")
+    while not stop_event.wait(cfg_getter().get("sentry_log_poll_seconds", 3)):
+        try:
+            cfg = cfg_getter()
+            path = cfg.get("sentry_vector_log_path", "/mnt/vector-logs/vector.log")
+            pattern = cfg.get("sentry_trigger_pattern", "reacted_to_sound")
+            try:
+                size = os.path.getsize(path)
+            except OSError as e:
+                log.warning("sentry: cannot stat vector log at %s: %s", path, e)
+                continue
+
+            state = load_state()
+            offset = state.get(SENTRY_LOG_OFFSET_KEY)
+            if offset is None or offset > size:
+                state[SENTRY_LOG_OFFSET_KEY] = size
+                save_state(state)
+                continue
+            if size == offset:
+                continue
+
+            with open(path, "r", errors="replace") as f:
+                f.seek(offset)
+                chunk = f.read(2_000_000)  # defensive cap per poll
+            state[SENTRY_LOG_OFFSET_KEY] = offset + len(chunk.encode("utf-8", "replace"))
+            save_state(state)
+
+            trigger_ts = None
+            for line in chunk.splitlines():
+                if pattern not in line.lower():
+                    continue
+                m = SENTRY_SOUND_TS_RE.match(line)
+                if m:
+                    try:
+                        trigger_ts = datetime(
+                            int(m["y"]), int(m["mo"]), int(m["d"]),
+                            int(m["h"]), int(m["mi"]), int(m["s"]),
+                            tzinfo=timezone.utc,
+                        ).timestamp()
+                    except ValueError:
+                        trigger_ts = time.time()
+                else:
+                    trigger_ts = time.time()
+
+            if trigger_ts is None:
+                continue
+
+            cfg = cfg_getter()
+            state = load_state()
+            if not sentry_is_active(cfg, state):
+                continue
+            if cfg.get("sentry_respect_quiet_hours", True) and in_quiet_hours(cfg):
+                log_skip("sentry: quiet hours -- no capture", 300)
+                continue
+            _sentry_maybe_capture(cfg, state, trigger_ts, "sound")
+        except Exception as e:
+            log.exception("sentry: sentry_log_watch_loop iteration failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# SAFETY ALERTS -- "call for help" (2026-09-29, Hermes, post-incident: Vector
+# drove off the desk overnight because live-13's thinking-animation loop
+# scooted him with firmware cliff-stop disabled -- see the wire-pod
+# thinkinganim.go fix for the root cause/fix on that side. This module is
+# the OTHER half: even with the animation bug fixed, the owner should never
+# again find out about a fall/stuck robot by tripping over him. It watches
+# the SAME vector.log this container already tails for sentry, using the
+# exact same offset-tracked tail pattern as sentry_log_watch_loop (own
+# offset key so the two loops' positions never interfere), but
+# deliberately runs UNGATED by sentry_is_active()/quiet-hours/presence --
+# a fall alert must fire whether the owner is home, asleep, or on vacation.
+#
+# Event classification is based on REAL event strings observed in this
+# robot's own vector.log (grepped directly, not guessed):
+#   - "@behavior.feature.startReactToCliff..." -- a NORMAL, safe edge-stop.
+#     A single one must NEVER page (the owner set the robot down near a table
+#     edge, cliff sensor did its job). Only 2+ within
+#     `safety_cliff_repeat_window_seconds` (default 60s) count as "stuck
+#     re-triggering the same cliff", which DOES page.
+#   - "@behavior.feature.startStuckOnEdge..." -- the actual "I am stuck and
+#     can't recover" firmware behavior (distinct from, and rarer than,
+#     ReactToCliff). Always pages. Chosen over the very noisy/continuous
+#     "@mood.eventReactToUnexpectedMovement..." mood-delta ticks (which
+#     fire every ~4s throughout a stuck episode and are not themselves a
+#     discrete event) as the reliable single "stuck" signal.
+#   - "@behavior.feature.startInTheAir..." -- robot picked up. Always pages
+#     per the owner's own spec ("page on in-the-air, fall, or on-side
+#     events").
+#   - "@robot.offtreadsstatechanged..." containing Falling/OnFace/OnBack/
+#     OnSide -- an actual fall or landed-wrong event. Always pages.
+#
+# Each of the four alert keys (fall / stuck / in_the_air / cliff_repeated)
+# is independently rate-limited to at most one HA push per
+# `safety_alert_min_interval_seconds` (default 600s = 10 minutes) -- state
+# persisted in state.json (SAFETY_ALERT_LAST_AT_KEY), survives a container
+# restart. Every classified event (whether or not it pages) is appended to
+# safety.jsonl for the forensic record.
+# ---------------------------------------------------------------------------
+
+SAFETY_LOG_OFFSET_KEY = "safety_log_offset"          # byte offset into vector.log (own cursor, separate from sentry's)
+SAFETY_ALERT_LAST_AT_KEY = "safety_alert_last_at"    # dict: alert_key -> epoch of last HA push sent
+SAFETY_CLIFF_RECENT_KEY = "safety_recent_cliff_times"  # list[epoch] of recent lone ReactToCliff starts (repeated-cliff detection)
+
+SAFETY_ALERT_MIN_INTERVAL_SECONDS_DEFAULT = 600  # 10 minutes, per alert key
+
+
+def _safety_classify_line(line):
+    """Returns 'fall' / 'stuck' / 'in_the_air' / 'cliff' for a
+    safety-relevant vector.log line, else None. Matches on the exact
+    "@behavior.feature.start<Name>" tag (not "pre_start<Name>" or
+    "end<Name>") so each real-world episode is counted exactly once --
+    substring-matching "reacttocliff" alone would ALSO match the
+    "pre_startReactToCliff..." line firmware always logs a few ms earlier
+    for the same episode, double-counting every single cliff stop and
+    falsely tripping the repeated-cliff rule on one safe edge-stop.
+    """
+    low = line.lower()
+    if "offtreadsstatechanged" in low and (
+        "falling" in low or "onface" in low or "onback" in low or "onside" in low
+    ):
+        return "fall"
+    if "@behavior.feature.startstuckonedge" in low:
+        return "stuck"
+    if "@behavior.feature.startintheair" in low:
+        return "in_the_air"
+    if "@behavior.feature.startreacttocliff" in low:
+        return "cliff"
+    return None
+
+
+def _safety_should_alert(state, alert_key, now, min_interval):
+    last_by_key = state.get(SAFETY_ALERT_LAST_AT_KEY, {})
+    return (now - last_by_key.get(alert_key, 0)) >= min_interval
+
+
+def _safety_mark_alerted(state, alert_key, now):
+    last_by_key = dict(state.get(SAFETY_ALERT_LAST_AT_KEY, {}))
+    last_by_key[alert_key] = now
+    state[SAFETY_ALERT_LAST_AT_KEY] = last_by_key
+
+
+def _safety_log_event(cfg, record):
+    """Appends one JSON line to the safety metrics log -- same
+    open/append/_fix_owner pattern as _sentry_log_event. Every classified
+    event is recorded here regardless of whether it triggers a push, so a
+    burst of isolated ReactToCliff stops below the 'repeated' threshold is
+    still visible in the forensic record."""
+    path = cfg.get("safety_events_log_path", "/mnt/vector-brain/metrics/safety.jsonl")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+        _fix_owner(path)
+    except Exception as e:
+        log.warning("safety: failed writing event log: %s", e)
+
+
+def _safety_notify(cfg, message):
+    """HA push via the same notify service + ha_call_service helper
+    sentry's unknown-person alert already uses
+    (_sentry_notify_unknown_person) -- no photo attachment here (fall/
+    stuck/picked-up events have none)."""
+    service = cfg.get("ha_notify_service", "notify.mobile_app_YOUR_PHONE")
+    domain, _, svc = service.partition(".")
+    payload = {"title": "Vector safety alert", "message": message}
+    return ha_call_service(cfg, domain, svc, payload)
+
+
+def _safety_format_time(cfg, ts):
+    tz = ZoneInfo(cfg.get("timezone", "America/New_York")) if ZoneInfo else None
+    dt = datetime.fromtimestamp(ts, tz) if tz else datetime.fromtimestamp(ts)
+    try:
+        return dt.strftime("%-I:%M %p")  # e.g. "9:53 PM" (no leading zero)
+    except ValueError:
+        return dt.strftime("%I:%M %p")   # Windows fallback (unused in prod, kept for portability)
+
+
+def _safety_handle_event(cfg, state, alert_type, event_ts, raw_line):
+    """Records every classified event; sends at most one HA push per
+    alert key per safety_alert_min_interval_seconds. Returns the alert_key
+    that was (or would have been) used, mainly so the selftest/dry-run can
+    assert on it."""
+    _safety_log_event(cfg, {"ts": event_ts, "type": alert_type, "line": raw_line.strip()})
+
+    hhmm = _safety_format_time(cfg, event_ts)
+    min_interval = cfg.get("safety_alert_min_interval_seconds", SAFETY_ALERT_MIN_INTERVAL_SECONDS_DEFAULT)
+
+    if alert_type == "cliff":
+        window = cfg.get("safety_cliff_repeat_window_seconds", 60)
+        recent = [t for t in state.get(SAFETY_CLIFF_RECENT_KEY, []) if event_ts - t < window]
+        recent.append(event_ts)
+        state[SAFETY_CLIFF_RECENT_KEY] = recent
+        save_state(state)
+        if len(recent) < 2:
+            log_skip("safety: single ReactToCliff -- normal safe edge-stop, not paging", 60)
+            return "cliff_below_threshold"
+        message = f"Vector keeps hitting a cliff sensor near {hhmm} -- may be stuck at an edge"
+        alert_key = "cliff_repeated"
+    elif alert_type == "fall":
+        message = f"Vector took a tumble at {hhmm}"
+        alert_key = "fall"
+    elif alert_type == "stuck":
+        message = f"Vector is stuck at {hhmm}"
+        alert_key = "stuck"
+    elif alert_type == "in_the_air":
+        message = f"Vector was picked up at {hhmm}"
+        alert_key = "in_the_air"
+    else:
+        return None
+
+    if not _safety_should_alert(state, alert_key, event_ts, min_interval):
+        log_skip(f"safety: {alert_key} alert rate-limited (<{min_interval}s since last)", 60)
+        return alert_key + "_rate_limited"
+
+    ok = _safety_notify(cfg, message)
+    log.warning("safety: %s alert -> %s (%r)", alert_key, "sent" if ok else "FAILED", message)
+    if ok:
+        _safety_mark_alerted(state, alert_key, event_ts)
+        save_state(state)
+    return alert_key
+
+
+def safety_log_watch_loop(cfg_getter, stop_event):
+    """Background daemon thread, started once from main(). Tails
+    vector.log with its own persisted byte offset (SAFETY_LOG_OFFSET_KEY,
+    independent of sentry's own offset) -- see the module docstring above
+    for why this loop is NOT gated by sentry_is_active()/quiet hours/
+    presence. Same shrunk/rotated-file handling as sentry_log_watch_loop:
+    an offset past the current file size resets to end-of-file rather than
+    erroring or replaying stale history."""
+    log.info("safety: safety_log_watch_loop starting")
+    while not stop_event.wait(cfg_getter().get("safety_log_poll_seconds", 3)):
+        try:
+            cfg = cfg_getter()
+            path = cfg.get("sentry_vector_log_path", "/mnt/vector-logs/vector.log")
+            try:
+                size = os.path.getsize(path)
+            except OSError as e:
+                log.warning("safety: cannot stat vector log at %s: %s", path, e)
+                continue
+
+            state = load_state()
+            offset = state.get(SAFETY_LOG_OFFSET_KEY)
+            if offset is None or offset > size:
+                state[SAFETY_LOG_OFFSET_KEY] = size
+                save_state(state)
+                continue
+            if size == offset:
+                continue
+
+            with open(path, "r", errors="replace") as f:
+                f.seek(offset)
+                chunk = f.read(2_000_000)  # defensive cap per poll, same as sentry's tail
+            state[SAFETY_LOG_OFFSET_KEY] = offset + len(chunk.encode("utf-8", "replace"))
+            save_state(state)
+
+            for line in chunk.splitlines():
+                alert_type = _safety_classify_line(line)
+                if alert_type is None:
+                    continue
+                m = SENTRY_SOUND_TS_RE.match(line)
+                if m:
+                    try:
+                        event_ts = datetime(
+                            int(m["y"]), int(m["mo"]), int(m["d"]),
+                            int(m["h"]), int(m["mi"]), int(m["s"]),
+                            tzinfo=timezone.utc,
+                        ).timestamp()
+                    except ValueError:
+                        event_ts = time.time()
+                else:
+                    event_ts = time.time()
+                state = load_state()
+                _safety_handle_event(cfg, state, alert_type, event_ts, line)
+        except Exception as e:
+            log.exception("safety: safety_log_watch_loop iteration failed: %s", e)
+
+
+def _safety_selftest():
+    """Dry-run of the pure-logic pieces with sample log lines -- no
+    network, no SDK, no container needed. Run with:
+    python3 curious.py --safety-selftest
+
+    IMPORTANT: this must NEVER hit the real Home Assistant API.
+    _safety_handle_event() calls module-level _safety_notify() for any
+    alert that clears rate-limiting, and _safety_notify() is a real
+    ha_call_service() HTTP POST -- so a naive dry-run that just calls
+    _safety_handle_event() directly would actually push real
+    notifications to the owner's phone every time this selftest runs (this
+    happened once, 2026-09-29, during the initial version of this test --
+    5 unwanted "Vector safety alert" pushes went to
+    notify.mobile_app_YOUR_PHONE). Fixed by monkeypatching the
+    module-level _safety_notify for the duration of this function only,
+    with a fake that records calls instead of sending them, and restoring
+    the real one in a finally block no matter how the test exits."""
+    ok = True
+    sent_notifications = []
+
+    def _fake_notify(cfg, message):
+        sent_notifications.append(message)
+        return True
+
+    global _safety_notify
+    _real_safety_notify = _safety_notify
+    _safety_notify = _fake_notify
+
+    def check(label, cond):
+        nonlocal ok
+        print(f"{'PASS' if cond else 'FAIL'}: {label}")
+        if not cond:
+            ok = False
+
+    try:
+        return _safety_selftest_body(check, sent_notifications, ok)
+    finally:
+        _safety_notify = _real_safety_notify
+
+
+def _safety_selftest_body(check, sent_notifications, ok):
+
+    # --- classification on real-shaped sample lines ---
+    sample_cliff_prestart = "2026-09-29 21:51:22.317 [ROBOT_IP] <14>Sep 29 17:51:22 Vector-A1B2 vic-engine[4922]: @behavior.feature.pre_startReactToCliffLowStim00A4B968-75A5-E26E-00D0-0006CF7989ACAutonomous250067"
+    sample_cliff_start = "2026-09-29 21:51:22.318 [ROBOT_IP] <14>Sep 29 17:51:22 Vector-A1B2 vic-engine[4922]: @behavior.feature.startReactToCliffAI00A4B968-75A5-E26E-00D0-0006CF7989ACAutonomous250067"
+    sample_stuck_start = "2026-09-29 20:42:31.296 [ROBOT_IP] <14>Sep 29 16:42:30 Vector-A1B2 vic-engine[4922]: @behavior.feature.startStuckOnEdgeAI0004FCFB-9073-4B72-00F0-4FBDACB15C8EAutonomous50025781"
+    sample_inair_start = "2026-09-29 01:07:38.692 [ROBOT_IP] <14>Sep 28 21:07:38 Vector-A1B2 vic-engine[946]: @behavior.feature.startInTheAirAI006873F4-57C1-EE76-0042-3F77D3A3C835Social5830649"
+    sample_falling = "2026-09-29 01:07:40.027 [ROBOT_IP] <14>Sep 28 21:07:40 Vector-A1B2 vic-engine[946]: @robot.offtreadsstatechangedInAirFalling5832459"
+    sample_onface = "2026-09-29 03:05:07.435 [ROBOT_IP] <14>Sep 28 23:05:07 Vector-A1B2 vic-engine[946]: @robot.offtreadsstatechangedOnFaceInAir12879099"
+    sample_irrelevant = "2026-09-29 21:50:19.190 [ROBOT_IP] <14>Sep 28 21:50:18 Vector-A1B2 vic-robot[866]: IMUFilter.Bias: 0.267389 0.108637 -0.201036 (deg/sec)"
+    sample_ontreads = "2026-09-29 21:50:07.793 [ROBOT_IP] <14>Sep 29 17:50:07 Vector-A1B2 vic-engine[4922]: @robot.offtreadsstatechangedOnTreadsInAir3454082392"
+
+    check("pre_startReactToCliff is NOT classified (avoids double count)", _safety_classify_line(sample_cliff_prestart) is None)
+    check("startReactToCliff -> 'cliff'", _safety_classify_line(sample_cliff_start) == "cliff")
+    check("startStuckOnEdge -> 'stuck'", _safety_classify_line(sample_stuck_start) == "stuck")
+    check("startInTheAir -> 'in_the_air'", _safety_classify_line(sample_inair_start) == "in_the_air")
+    check("offtreadsstatechanged...Falling -> 'fall'", _safety_classify_line(sample_falling) == "fall")
+    check("offtreadsstatechanged...OnFace -> 'fall'", _safety_classify_line(sample_onface) == "fall")
+    check("unrelated IMU line -> None", _safety_classify_line(sample_irrelevant) is None)
+    check("OnTreadsInAir (still riding, no fall) -> None", _safety_classify_line(sample_ontreads) is None)
+
+    # --- single ReactToCliff never alerts; a 2nd within the window does ---
+    cfg = {"safety_cliff_repeat_window_seconds": 60, "safety_alert_min_interval_seconds": 600}
+    state = {}
+    r1 = _safety_handle_event(cfg, state, "cliff", 1000.0, sample_cliff_start)
+    check("1st isolated cliff stop does not page", r1 == "cliff_below_threshold")
+    r2 = _safety_handle_event(cfg, state, "cliff", 1030.0, sample_cliff_start)
+    check("2nd cliff stop within 60s DOES page", r2 == "cliff_repeated")
+
+    # --- cliff events far apart never accumulate into a page ---
+    state2 = {}
+    _safety_handle_event(cfg, state2, "cliff", 2000.0, sample_cliff_start)
+    r3 = _safety_handle_event(cfg, state2, "cliff", 2200.0, sample_cliff_start)  # 200s later, outside 60s window
+    check("cliff stops 200s apart (outside window) do not page", r3 == "cliff_below_threshold")
+
+    # --- fall/stuck/in_the_air always alert (first occurrence) ---
+    check("fall alerts immediately", _safety_handle_event(cfg, {}, "fall", 3000.0, sample_falling) == "fall")
+    check("stuck alerts immediately", _safety_handle_event(cfg, {}, "stuck", 3000.0, sample_stuck_start) == "stuck")
+    check("in_the_air alerts immediately", _safety_handle_event(cfg, {}, "in_the_air", 3000.0, sample_inair_start) == "in_the_air")
+
+    # --- per-type rate limiting (10 min default) ---
+    state3 = {}
+    r4 = _safety_handle_event(cfg, state3, "fall", 4000.0, sample_falling)
+    r5 = _safety_handle_event(cfg, state3, "fall", 4060.0, sample_falling)  # 60s later, well under 600s
+    check("fall alert fires once", r4 == "fall")
+    check("2nd fall 60s later is rate-limited", r5 == "fall_rate_limited")
+    r6 = _safety_handle_event(cfg, state3, "fall", 4700.0, sample_falling)  # 700s later, past the window
+    check("3rd fall 700s later (past 600s window) pages again", r6 == "fall")
+
+    # Every alert above that "sent" actually went to the fake recorder,
+    # never to the real HA API -- this is the assertion that makes this
+    # genuinely a dry-run.
+    check("all alerts captured by the fake notifier (none hit real HA)",
+          len(sent_notifications) == 6)  # cliff_repeated, fall, stuck, in_the_air, +2 more fall (rate-limited 2nd fall does NOT add one; the 3rd, past-window fall does)
+
+    print("SELFTEST", "PASSED" if ok else "FAILED")
+    print(f"(dry-run: {len(sent_notifications)} notification(s) would have been sent -- none actually transmitted)")
+    return ok
+
+
+def _sentry_selftest():
+    """Dry-run of the pure-logic pieces with mocks -- no network, no SDK,
+    no container needed. Run with: python3 curious.py --sentry-selftest"""
+    ok = True
+
+    def check(label, cond):
+        nonlocal ok
+        print(f"{'PASS' if cond else 'FAIL'}: {label}")
+        if not cond:
+            ok = False
+
+    check("home reading", _presence_reading_to_home("home") is True)
+    check("not_home reading", _presence_reading_to_home("not_home") is False)
+    check("zone reading counts as away", _presence_reading_to_home("Work") is False)
+    check("unknown reading is None (unverifiable)", _presence_reading_to_home("unknown") is None)
+    check("unavailable reading is None", _presence_reading_to_home("unavailable") is None)
+    check("missing reading is None", _presence_reading_to_home(None) is None)
+
+    cfg_off = {"sentry_enabled": True, "sentry_manual_override": "off"}
+    cfg_on = {"sentry_enabled": True, "sentry_manual_override": "on"}
+    cfg_auto = {"sentry_enabled": True, "sentry_manual_override": "auto"}
+    cfg_disabled = {"sentry_enabled": False}
+    check("override off -> never active", sentry_is_active(cfg_off, {SENTRY_HOME_KEY: False}) is False)
+    check("override on -> always active", sentry_is_active(cfg_on, {SENTRY_HOME_KEY: True}) is True)
+    check("auto + away -> active", sentry_is_active(cfg_auto, {SENTRY_HOME_KEY: False}) is True)
+    check("auto + home -> inactive", sentry_is_active(cfg_auto, {SENTRY_HOME_KEY: True}) is False)
+    check("auto + no reading yet -> inactive (fail-safe default)",
+          sentry_is_active(cfg_auto, {}) is False)
+    check("sentry_enabled=False -> never active regardless of override",
+          sentry_is_active(cfg_disabled, {SENTRY_HOME_KEY: False}) is False)
+
+    now = 1_000_000.0
+    cfg_rl = {"sentry_capture_max_per_minute": 1, "sentry_capture_max_per_hour": 3}
+    st = {SENTRY_CAPTURE_TIMES_KEY: []}
+    check("not rate-limited when empty", _sentry_rate_limited(cfg_rl, st, now) is False)
+    st[SENTRY_CAPTURE_TIMES_KEY] = [now - 10]
+    check("rate-limited within same minute", _sentry_rate_limited(cfg_rl, st, now) is True)
+    st[SENTRY_CAPTURE_TIMES_KEY] = [now - 3500, now - 3400, now - 3300]
+    check("rate-limited at hourly cap even outside the minute window",
+          _sentry_rate_limited(cfg_rl, st, now) is True)
+    st[SENTRY_CAPTURE_TIMES_KEY] = [now - 4000]  # pruned (>3600s old)
+    check("stale capture times pruned from the hourly window",
+          _sentry_rate_limited(cfg_rl, st, now) is False)
+
+    # Debounce simulation: two consistent "away" readings should flip
+    # home=True -> home=False; a single flaky reading should not.
+    state = {SENTRY_HOME_KEY: True}
+    for reading in (False,):  # only one reading -- must NOT flip yet
+        if state.get(SENTRY_DEBOUNCE_VALUE_KEY) == reading:
+            state[SENTRY_DEBOUNCE_COUNT_KEY] = state.get(SENTRY_DEBOUNCE_COUNT_KEY, 0) + 1
+        else:
+            state[SENTRY_DEBOUNCE_VALUE_KEY] = reading
+            state[SENTRY_DEBOUNCE_COUNT_KEY] = 1
+    would_flip = state[SENTRY_DEBOUNCE_COUNT_KEY] >= 2 and False != state.get(SENTRY_HOME_KEY, True)
+    check("single away reading does not flip (debounce=2)", would_flip is False)
+    # second consistent reading
+    reading = False
+    if state.get(SENTRY_DEBOUNCE_VALUE_KEY) == reading:
+        state[SENTRY_DEBOUNCE_COUNT_KEY] += 1
+    would_flip = state[SENTRY_DEBOUNCE_COUNT_KEY] >= 2 and reading != state.get(SENTRY_HOME_KEY, True)
+    check("second consistent away reading flips (debounce=2)", would_flip is True)
+
+    print("SELFTEST", "PASSED" if ok else "FAILED")
+    return ok
 
 
 if __name__ == "__main__":
+    if "--sentry-selftest" in sys.argv:
+        sys.exit(0 if _sentry_selftest() else 1)
+    if "--safety-selftest" in sys.argv:
+        sys.exit(0 if _safety_selftest() else 1)
+    if "--explore-selftest" in sys.argv:
+        sys.exit(0 if _explore_selftest() else 1)
     main()

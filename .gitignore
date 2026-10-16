@@ -28,3 +28,22 @@ dashboard/snapshots/
 # Editors / OS
 .DS_Store
 *.swp
+
+# Face DB: never commit enrolled people, embeddings, crops, test frames or model weights
+faces/people/
+faces/work/
+faces/config.json
+faces/current_people.json
+faces/models/*.onnx
+*.npy
+
+# Credentials / per-host state
+.ha_token
+**/.ha_token
+music/ytm/
+oauth.json
+device_state.json
+curious/config.json
+wire-pod-patches/apiConfig.json
+wire-pod-patches/customIntents.json
+brighten-test/

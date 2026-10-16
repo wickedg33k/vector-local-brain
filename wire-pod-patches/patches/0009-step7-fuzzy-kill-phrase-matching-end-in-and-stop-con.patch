@@ -1,0 +1,350 @@
+From 10f8ef2269555f4b7b8b36ad54a5d3395d529fc9 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 09/10] step7: fuzzy kill-phrase matching (end/in/and/stop +
+ conversation, word-order tolerant)
+
+Checked before plugins/custom intents/core intents/classifier/LLM in
+ProcessTextAll. Fixes real misses where Vosk transcribed "end" as "in".
+---
+ chipper/pkg/wirepod/ttr/endconversationcmd.go | 138 ++++++++++++++----
+ .../wirepod/ttr/endconversationcmd_test.go    |  83 ++++++++++-
+ chipper/pkg/wirepod/ttr/matchIntentSend.go    |  12 ++
+ 3 files changed, 195 insertions(+), 38 deletions(-)
+
+diff --git a/chipper/pkg/wirepod/ttr/endconversationcmd.go b/chipper/pkg/wirepod/ttr/endconversationcmd.go
+index 98effc7..c22ec36 100644
+--- a/chipper/pkg/wirepod/ttr/endconversationcmd.go
++++ b/chipper/pkg/wirepod/ttr/endconversationcmd.go
+@@ -7,20 +7,37 @@ package wirepod_ttr
+ // back-and-forth deliberately rather than only via the ~12s silence
+ // timeout (see conversation.go's decideConversationContinuation).
+ //
+-// Routing: wired as a single customIntents.json entry
+-// (EndConversationCmdCustomIntentName, "end_conversation_custom") whose
+-// utterances list is the full kill-phrase set below. customIntentHandler
+-// in matchIntentSend.go checks custom intents BEFORE findIntentMatch's
+-// CORE keyphrase scan and BEFORE the fast LLM classifier/LLM chat path
+-// ever run -- same convention sentry_cmd_custom (sentrycmd.go) and
+-// intent_ask_hermes already use, so a kill phrase can never be swallowed
+-// by the classifier or answered by the LLM instead of ending the
+-// conversation. Matched here (special-cased on c.Name, same pattern as
+-// SentryCmdCustomIntentName) instead of the generic
+-// runCustomIntentExec/exec-script path so the phrase matching itself is a
+-// pure, directly unit-tested Go function -- same convention as
+-// classifySentryMode (sentrycmd.go) and decideConversationContinuation
+-// (conversation.go) elsewhere in this package.
++// Fuzzy matching (2026-10-15b, Hermes; the owner: "the kill phrase does NOT
++// end the conversation"): the original version only matched the exact
++// phrases in customIntents.json's end_conversation_custom entry via
++// customIntentHandler's plain substring check. Real production transcripts
++// from the owner's own attempts (2026-10-15 18:34:29, 18:35:21, 18:35:46 UTC)
++// show Vosk consistently mishearing "end" as "in" -- "end conversation
++// vector" came back as "in conversation vector" (twice) and "vector in
++// conversation" (reordered) -- so NONE of the three real attempts matched,
++// and the LLM chat path ran instead every time (it even correctly noticed
++// the repeated phrase and chatted ABOUT it: "You've said 'in conversation'
++// three times now..." -- the one thing it never did was actually end the
++// conversation). MaybeHandleEndConversationCmd below is now the primary
++// gate: a dedicated, directly-unit-tested, regex-based fuzzy matcher
++// (classifyEndConversationCmd) that tolerates the end/in/and/stop
++// mishearing and reasonable word-order variation, called from
++// ProcessTextAll (matchIntentSend.go) BEFORE plugins, custom intents,
++// CORE/SOCIAL keyphrase matching, the fast classifier, and the LLM chat
++// path -- so it can never be swallowed by any of them, in or out of
++// conversation mode (conversation-mode follow-up turns run through the
++// exact same ProcessTextAll pipeline as a fresh wake-word turn). The
++// original customIntents.json entry + customIntentHandler special case are
++// left in place as a harmless, redundant fallback (exact-phrase list,
++// documented in the "Loaded custom intents" startup log) but are normally
++// unreachable now since this earlier check already returns first on a
++// match.
++//
++// Routing (background): originally wired as a single customIntents.json
++// entry (EndConversationCmdCustomIntentName, "end_conversation_custom")
++// special-cased in customIntentHandler, same pattern as sentry_cmd_custom
++// (sentrycmd.go) and intent_ask_hermes. See the 2026-10-15b update above
++// for why that alone wasn't robust enough.
+ //
+ // Acks immediately (intent_system_noaudio, no canned reply) via IntentPass
+ // before calling EndConversation and speaking the goodbye -- same lesson
+@@ -35,6 +52,7 @@ package wirepod_ttr
+ // sayText, matching the bare confirmation pattern handleSentryCmd uses.
+ 
+ import (
++	"regexp"
+ 	"strings"
+ 
+ 	"github.com/kercre123/wire-pod/chipper/pkg/logger"
+@@ -43,38 +61,78 @@ import (
+ 
+ // EndConversationCmdCustomIntentName is the customIntents.json entry name
+ // customIntentHandler special-cases into handleEndConversationCmd instead
+-// of the generic exec-script path.
++// of the generic exec-script path. Kept as a redundant fallback -- see the
++// 2026-10-15b file-header note for why MaybeHandleEndConversationCmd
++// (called earlier, from ProcessTextAll) is the real gate now.
+ const EndConversationCmdCustomIntentName = "end_conversation_custom"
+ 
+ // endConversationGoodbyeText is what Vector says back when the kill phrase
+ // ends the conversation. Short and spoken directly -- no LLM call.
+ const endConversationGoodbyeText = "Later!"
+ 
+-// endConversationPhrases are the kill phrases that end conversation mode
+-// immediately. Matched as a substring of the (already-lowercased, per
+-// customIntentHandler's seekText convention) transcribed utterance, same
+-// as every other custom intent in this package.
+-var endConversationPhrases = []string{
+-	"end conversation vector",
+-	"end conversation",
++// endConversationExactPhrases are kill phrases that don't contain
++// "conversation" at all, so they can't be covered by
++// endConversationMarkerRe below -- matched as a plain substring of the
++// normalized (lowercased, trimmed) transcript.
++var endConversationExactPhrases = []string{
+ 	"that's all vector",
+ 	"thats all vector",
+ 	"goodbye vector",
+ }
+ 
++// endConversationMarkerRe is the fuzzy match behind "end conversation"
++// style phrases. Vosk has been observed, in real production transcripts,
++// to mishear "end" as "in" (confirmed 3 times in a row, 2026-10-15) --
++// "and" is included too (a coordinator-flagged plausible mishearing of the
++// same word), and "stop" as a reasonable alternate phrasing a person might
++// actually say instead of "end". Matches either word order ("end
++// conversation" / "conversation ended" style callers aren't expected, but
++// the alternation covers a marker immediately before OR after
++// "conversation", with an optional "the" in between on the before side)
++// so "vector in conversation" (reordered relative to "in conversation
++// vector") also matches.
++var endConversationMarkerRe = regexp.MustCompile(
++	`\b(end|in|and|stop)\b(\s+the)?\s+conversation\b` +
++		`|\bconversation\b\s+(end|in|and|stop)\b`,
++)
++
++// endConversationMaxFuzzyWords caps how long an utterance can be and still
++// be eligible for the fuzzy marker-regex match above. Every real kill-
++// phrase variant seen or requested is 2-4 words ("in conversation",
++// "vector in conversation", "end the conversation", "and conversation
++// vector"); capping at 6 words keeps a long, unrelated sentence that
++// happens to contain "conversation" from accidentally matching. The
++// endConversationExactPhrases list above is NOT subject to this cap -- it
++// has no such accidental-substring risk since those phrases are more
++// distinctive.
++const endConversationMaxFuzzyWords = 6
++
++// normalizeEndConversationVoiceText lowercases and trims voiceText for
++// matching. Split out so the exact same normalization is used by both the
++// exact-phrase and fuzzy-regex checks, and is directly testable.
++func normalizeEndConversationVoiceText(voiceText string) string {
++	return strings.ToLower(strings.TrimSpace(voiceText))
++}
++
+ // classifyEndConversationCmd is the pure phrase-matching decision behind
+ // the kill phrase, split out so it's directly unit-testable with no
+ // gRPC/HTTP/robot connection required -- same pattern as
+ // classifySentryMode/decideConversationContinuation elsewhere in this
+ // package.
+ func classifyEndConversationCmd(voiceText string) bool {
+-	lower := strings.ToLower(voiceText)
+-	for _, phrase := range endConversationPhrases {
+-		if strings.Contains(lower, phrase) {
++	normalized := normalizeEndConversationVoiceText(voiceText)
++	if normalized == "" {
++		return false
++	}
++	for _, phrase := range endConversationExactPhrases {
++		if strings.Contains(normalized, phrase) {
+ 			return true
+ 		}
+ 	}
+-	return false
++	if len(strings.Fields(normalized)) > endConversationMaxFuzzyWords {
++		return false
++	}
++	return endConversationMarkerRe.MatchString(normalized)
+ }
+ 
+ // endConversationAckFn/endConversationGetRobotFn/endConversationSayFn are
+@@ -89,12 +147,13 @@ var (
+ 	endConversationSayFn      = sayText
+ )
+ 
+-// handleEndConversationCmd is customIntentHandler's special case for
+-// EndConversationCmdCustomIntentName (see matchIntentSend.go, alongside
+-// the sentry_cmd_custom and intent_ask_hermes special cases). Acks the
+-// intent stream immediately, resets any tracked conversation state for
+-// this ESN (so no further auto-listen can fire), then speaks the goodbye
+-// directly -- no LLM call, no further listen triggered.
++// handleEndConversationCmd is the shared orchestration for ending the
++// conversation on a kill-phrase match: acks the intent stream immediately,
++// resets any tracked conversation state for this ESN (so no further
++// auto-listen can fire), then speaks the goodbye directly -- no LLM call,
++// no further listen triggered. Called both from
++// MaybeHandleEndConversationCmd (the real gate, see file header) and from
++// customIntentHandler's redundant fallback case.
+ func handleEndConversationCmd(req interface{}, botSerial, voiceText string) {
+ 	endConversationAckFn(req, voiceText)
+ 
+@@ -111,3 +170,18 @@ func handleEndConversationCmd(req interface{}, botSerial, voiceText string) {
+ 	}
+ 	endConversationSayFn(robot, endConversationGoodbyeText)
+ }
++
++// MaybeHandleEndConversationCmd is the primary kill-phrase gate, called
++// from the very top of ProcessTextAll (matchIntentSend.go) -- before
++// plugins, custom intents, CORE/SOCIAL keyphrase matching, the fast
++// classifier, and the LLM chat path, so a misheard-but-still-recognizable
++// kill phrase can never be swallowed by any of them. Returns true (and
++// has already fully handled the turn) on a match; false otherwise, in
++// which case the caller should continue its normal dispatch.
++func MaybeHandleEndConversationCmd(req interface{}, voiceText, botSerial string) bool {
++	if !classifyEndConversationCmd(voiceText) {
++		return false
++	}
++	handleEndConversationCmd(req, botSerial, voiceText)
++	return true
++}
+diff --git a/chipper/pkg/wirepod/ttr/endconversationcmd_test.go b/chipper/pkg/wirepod/ttr/endconversationcmd_test.go
+index 876ea78..7e149d4 100644
+--- a/chipper/pkg/wirepod/ttr/endconversationcmd_test.go
++++ b/chipper/pkg/wirepod/ttr/endconversationcmd_test.go
+@@ -7,15 +7,19 @@ import (
+ )
+ 
+ // TestClassifyEndConversationCmd covers the kill-phrase matching behind
+-// ending conversation mode, including case-insensitivity, phrases embedded
+-// in a longer sentence, and non-matches -- same style as
+-// TestClassifySentryMode (sentrycmd_test.go).
++// ending conversation mode: the original exact phrases, case-
++// insensitivity, and -- critically -- the real Vosk mishearings observed
++// live on 2026-10-15 (the owner said "end conversation vector" three times;
++// Vosk transcribed "in conversation vector" twice and "vector in
++// conversation" once, and NONE of the three matched the original exact-
++// phrase-only version of this function).
+ func TestClassifyEndConversationCmd(t *testing.T) {
+ 	cases := []struct {
+ 		name      string
+ 		voiceText string
+ 		want      bool
+ 	}{
++		// --- original exact phrases ---
+ 		{"end conversation vector exact", "end conversation vector", true},
+ 		{"end conversation bare", "end conversation", true},
+ 		{"that's all vector", "that's all vector", true},
+@@ -23,14 +27,34 @@ func TestClassifyEndConversationCmd(t *testing.T) {
+ 		{"goodbye vector", "goodbye vector", true},
+ 		{"uppercase", "GOODBYE VECTOR", true},
+ 		{"mixed case", "End Conversation Vector", true},
+-		{"embedded in sentence", "ok that's all vector thanks", true},
+-		{"end conversation embedded", "lets end conversation now", true},
++		{"embedded in short sentence", "ok that's all vector thanks", true},
+ 
++		// --- real production mishearings (2026-10-15 18:34-18:36 UTC) ---
++		{"real transcript 1 (end->in)", "in conversation vector", true},
++		{"real transcript 2 (end->in)", "in conversation vector", true},
++		{"real transcript 3 (reordered, end->in)", "vector in conversation", true},
++
++		// --- coordinator-suggested fuzzy variants ---
++		{"and conversation vector (end->and)", "and conversation vector", true},
++		{"end the conversation", "end the conversation", true},
++		{"stop conversation vector", "stop conversation vector", true},
++
++		// --- non-matches ---
+ 		{"unrelated phrase", "what's the weather today", false},
+ 		{"empty string", "", false},
+ 		{"goodbye alone no vector", "goodbye", false},
+ 		{"vector alone", "vector", false},
+-		{"partial word", "conversational ability is great", false},
++		{"partial word not conversation", "conversational ability is great", false},
++		{"ask hermes unrelated", "ask hermes what's the capital of north carolina", false},
++
++		// --- false-positive guard: "conversation" in a long unrelated
++		// sentence must NOT trigger just because "and" appears somewhere
++		// in it (endConversationMaxFuzzyWords caps this) ---
++		{
++			"long sentence with and + conversation far apart",
++			"i had a really interesting and long conversation with my coworker about fishing yesterday afternoon",
++			false,
++		},
+ 	}
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+@@ -42,6 +66,53 @@ func TestClassifyEndConversationCmd(t *testing.T) {
+ 	}
+ }
+ 
++// TestMaybeHandleEndConversationCmd_Match verifies the ProcessTextAll-level
++// gate: a match runs the full orchestration and returns true.
++func TestMaybeHandleEndConversationCmd_Match(t *testing.T) {
++	const esn = "test-esn-maybehandle-match"
++	placeConversationState(ConversationState{ESN: esn, Active: true, ListenCount: 5})
++
++	var events []string
++	origAck, origGetRobot, origSay := endConversationAckFn, endConversationGetRobotFn, endConversationSayFn
++	defer func() {
++		endConversationAckFn, endConversationGetRobotFn, endConversationSayFn = origAck, origGetRobot, origSay
++		EndConversation(esn)
++	}()
++	endConversationAckFn = func(req interface{}, voiceText string) { events = append(events, "ack") }
++	endConversationGetRobotFn = func(botSerial string) (*vector.Vector, error) {
++		events = append(events, "getrobot")
++		return nil, nil
++	}
++	endConversationSayFn = func(robot *vector.Vector, text string) { events = append(events, "say:"+text) }
++
++	got := MaybeHandleEndConversationCmd(nil, "in conversation vector", esn)
++	if !got {
++		t.Fatalf("MaybeHandleEndConversationCmd returned false, want true for a real mishearing match")
++	}
++	want := []string{"ack", "getrobot", "say:" + endConversationGoodbyeText}
++	if len(events) != len(want) {
++		t.Fatalf("events = %v, want %v", events, want)
++	}
++}
++
++// TestMaybeHandleEndConversationCmd_NoMatch verifies the gate is a
++// pure pass-through (no side effects, returns false) on ordinary speech,
++// so callers safely continue their normal dispatch.
++func TestMaybeHandleEndConversationCmd_NoMatch(t *testing.T) {
++	var called bool
++	origAck := endConversationAckFn
++	defer func() { endConversationAckFn = origAck }()
++	endConversationAckFn = func(req interface{}, voiceText string) { called = true }
++
++	got := MaybeHandleEndConversationCmd(nil, "what's the weather today", "test-esn-nomatch")
++	if got {
++		t.Fatalf("MaybeHandleEndConversationCmd returned true for unrelated speech")
++	}
++	if called {
++		t.Fatalf("ack was called even though nothing matched")
++	}
++}
++
+ // TestHandleEndConversationCmd_HappyPath verifies the full orchestration:
+ // ack fires, conversation state is reset (via the real EndConversation,
+ // not a stub, so this also exercises getConversationState afterward), and
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index 8212818..14fcde6 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -386,6 +386,18 @@ func ProcessTextAll(req interface{}, voiceText string, intents []vars.JsonIntent
+ 		return runAskHermesWithQuestion(req, botSerial, voiceText)
+ 	}
+ 
++	// Kill-phrase gate (2026-10-15b, Hermes; the owner: "the kill phrase
++	// does NOT end the conversation"). Checked BEFORE plugins, custom
++	// intents, CORE/SOCIAL keyphrase matching, the fast classifier, and
++	// the LLM chat path -- in or out of conversation mode, since this is
++	// the SAME ProcessTextAll pipeline conversation-mode follow-up turns
++	// run through. See endconversationcmd.go's file header for the real
++	// Vosk mishearing evidence ('end' -> 'in') that made the original
++	// exact-phrase-only match miss all 3 of the owner's real attempts.
++	if MaybeHandleEndConversationCmd(req, voiceText, botSerial) {
++		return true
++	}
++
+ 	pluginMatched := pluginFunctionHandler(req, voiceText, botSerial)
+ 	customIntentMatched := customIntentHandler(req, voiceText, botSerial)
+ 	if customIntentMatched || pluginMatched {

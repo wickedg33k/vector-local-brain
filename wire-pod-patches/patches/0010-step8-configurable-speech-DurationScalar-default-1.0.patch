@@ -1,0 +1,70 @@
+From 908d99cb97825b727e0f13a49d2759b872dd1a1a Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 10/10] step8: configurable speech DurationScalar (default
+ 1.05, apiConfig knowledge.speech_duration_scalar)
+
+---
+ chipper/pkg/vars/config.go            | 16 ++++++++++++++++
+ chipper/pkg/wirepod/ttr/kgsim_cmds.go |  9 ++++++++-
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/chipper/pkg/vars/config.go b/chipper/pkg/vars/config.go
+index dd0d521..b5dd0cc 100644
+--- a/chipper/pkg/vars/config.go
++++ b/chipper/pkg/vars/config.go
+@@ -46,6 +46,13 @@ type apiConfig struct {
+ 		// for the state machine and termination rules.
+ 		ConversationMode       bool    `json:"conversation_mode"`
+ 		ConversationTimeoutSec int     `json:"conversation_timeout_sec"`
++		// SpeechDurationScalar added 2026-10-15 (Hermes, "fix vector and the
++		// damn ready"): passed as DoSayText's SayTextRequest.DurationScalar
++		// (kgsim_cmds.go). Values below 1.0 speak FASTER than Vector's
++		// natural pace, above 1.0 SLOWER. Default raised from the stock
++		// 0.95 to 1.05 (~10% slower, clearer) -- see the DurationScalar
++		// comment in kgsim_cmds.go. 0/unset falls back to that default.
++		SpeechDurationScalar   float32 `json:"speech_duration_scalar"`
+ 	} `json:"knowledge"`
+ 	STT struct {
+ 		Service  string `json:"provider"`
+@@ -157,6 +164,15 @@ func ReadConfig() {
+ 			APIConfig.Knowledge.ConversationTimeoutSec = 12
+ 		}
+ 
++		// Added 2026-10-15 (Hermes): same 0-means-unset convention as
++		// ConversationTimeoutSec above -- a config written before this
++		// field existed unmarshals it as 0, which would make Vector speak
++		// at DurationScalar=0 (almost certainly rejected/undefined by the
++		// robot's TTS engine), not the intended default.
++		if APIConfig.Knowledge.SpeechDurationScalar <= 0 {
++			APIConfig.Knowledge.SpeechDurationScalar = 1.05
++		}
++
+ 		writeBytes, _ := json.Marshal(APIConfig)
+ 		os.WriteFile(ApiConfigPath, writeBytes, 0644)
+ 		logger.Println("API config successfully read")
+diff --git a/chipper/pkg/wirepod/ttr/kgsim_cmds.go b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+index 86d3230..044e796 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim_cmds.go
++++ b/chipper/pkg/wirepod/ttr/kgsim_cmds.go
+@@ -393,12 +393,19 @@ func DoSayText(input string, robot *vector.Vector) error {
+ 		err := DoSayText_OpenAI(robot, input)
+ 		return err
+ 	}
++	// DurationScalar (2026-10-15, Hermes, "fix vector and the damn
++	// ready"): raised from the stock 0.95 to a configurable default of
++	// 1.05 (~10% slower, clearer) -- the owner found the default pace hard
++	// to follow/easy to mishear. Configurable via apiConfig.json's
++	// knowledge.speech_duration_scalar (see vars/config.go); 0/unset
++	// falls back to 1.05 there, not here, so this always reads a sane
++	// value.
+ 	robot.Conn.SayText(
+ 		context.Background(),
+ 		&vectorpb.SayTextRequest{
+ 			Text:           input,
+ 			UseVectorVoice: true,
+-			DurationScalar: 0.95,
++			DurationScalar: vars.APIConfig.Knowledge.SpeechDurationScalar,
+ 		},
+ 	)
+ 	return nil

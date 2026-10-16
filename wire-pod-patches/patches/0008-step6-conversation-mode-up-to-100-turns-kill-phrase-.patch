@@ -1,0 +1,357 @@
+From 87a6b11ed756814289a00ff91240d933fc8b5902 Mon Sep 17 00:00:00 2001
+From: vector-local-brain contributors <noreply@example.com>
+Date: Thu, 15 Oct 2026 00:00:00 +0000
+Subject: [PATCH 08/10] step6: conversation mode up to 100 turns + kill phrase
+ + conversation-timeout baseline fix
+
+The follow-up timeout was measured from the start of the round trip
+(including TTS playback) instead of from the end of speech, so long
+replies ate the whole listening window.
+---
+ chipper/pkg/wirepod/ttr/conversation.go       |   2 +-
+ chipper/pkg/wirepod/ttr/endconversationcmd.go | 113 +++++++++++++++
+ .../wirepod/ttr/endconversationcmd_test.go    | 135 ++++++++++++++++++
+ chipper/pkg/wirepod/ttr/kgsim.go              |  25 +++-
+ chipper/pkg/wirepod/ttr/matchIntentSend.go    |  11 ++
+ 5 files changed, 280 insertions(+), 6 deletions(-)
+ create mode 100644 chipper/pkg/wirepod/ttr/endconversationcmd.go
+ create mode 100644 chipper/pkg/wirepod/ttr/endconversationcmd_test.go
+
+diff --git a/chipper/pkg/wirepod/ttr/conversation.go b/chipper/pkg/wirepod/ttr/conversation.go
+index cbcada1..353d745 100644
+--- a/chipper/pkg/wirepod/ttr/conversation.go
++++ b/chipper/pkg/wirepod/ttr/conversation.go
+@@ -52,7 +52,7 @@ import (
+ // DefaultConversationMaxListens is the safety cap on consecutive
+ // auto-triggered listens within one conversation, so something like a TV
+ // left on in the background can't keep the robot listening forever.
+-const DefaultConversationMaxListens = 6
++const DefaultConversationMaxListens = 100
+ 
+ // DefaultConversationTimeoutSec mirrors the fallback also applied in
+ // vars.ReadConfig for configs written before this field existed.
+diff --git a/chipper/pkg/wirepod/ttr/endconversationcmd.go b/chipper/pkg/wirepod/ttr/endconversationcmd.go
+new file mode 100644
+index 0000000..98effc7
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/endconversationcmd.go
+@@ -0,0 +1,113 @@
++package wirepod_ttr
++
++// endconversationcmd.go -- voice kill-phrase to end "conversation mode"
++// immediately, added 2026-10-15 (Hermes, owner-requested alongside raising
++// DefaultConversationMaxListens from 6 to effectively-unlimited (100): with
++// unlimited auto-listen turns, the owner needs a reliable way to end the
++// back-and-forth deliberately rather than only via the ~12s silence
++// timeout (see conversation.go's decideConversationContinuation).
++//
++// Routing: wired as a single customIntents.json entry
++// (EndConversationCmdCustomIntentName, "end_conversation_custom") whose
++// utterances list is the full kill-phrase set below. customIntentHandler
++// in matchIntentSend.go checks custom intents BEFORE findIntentMatch's
++// CORE keyphrase scan and BEFORE the fast LLM classifier/LLM chat path
++// ever run -- same convention sentry_cmd_custom (sentrycmd.go) and
++// intent_ask_hermes already use, so a kill phrase can never be swallowed
++// by the classifier or answered by the LLM instead of ending the
++// conversation. Matched here (special-cased on c.Name, same pattern as
++// SentryCmdCustomIntentName) instead of the generic
++// runCustomIntentExec/exec-script path so the phrase matching itself is a
++// pure, directly unit-tested Go function -- same convention as
++// classifySentryMode (sentrycmd.go) and decideConversationContinuation
++// (conversation.go) elsewhere in this package.
++//
++// Acks immediately (intent_system_noaudio, no canned reply) via IntentPass
++// before calling EndConversation and speaking the goodbye -- same lesson
++// as sentrycmd.go's Bug 1 note: never leave the robot's own client-side
++// cloud-intent timeout racing against work this side is still doing.
++//
++// EndConversation is called BEFORE speaking (not after), so even if
++// something races with MaybeContinueConversation from a still-in-flight
++// previous turn, the conversation state is already reset and no further
++// auto-listen can be triggered for this ESN. No LLM call is made at all on
++// this path -- the goodbye text is a fixed string spoken directly via
++// sayText, matching the bare confirmation pattern handleSentryCmd uses.
++
++import (
++	"strings"
++
++	"github.com/kercre123/wire-pod/chipper/pkg/logger"
++	"github.com/kercre123/wire-pod/chipper/pkg/vars"
++)
++
++// EndConversationCmdCustomIntentName is the customIntents.json entry name
++// customIntentHandler special-cases into handleEndConversationCmd instead
++// of the generic exec-script path.
++const EndConversationCmdCustomIntentName = "end_conversation_custom"
++
++// endConversationGoodbyeText is what Vector says back when the kill phrase
++// ends the conversation. Short and spoken directly -- no LLM call.
++const endConversationGoodbyeText = "Later!"
++
++// endConversationPhrases are the kill phrases that end conversation mode
++// immediately. Matched as a substring of the (already-lowercased, per
++// customIntentHandler's seekText convention) transcribed utterance, same
++// as every other custom intent in this package.
++var endConversationPhrases = []string{
++	"end conversation vector",
++	"end conversation",
++	"that's all vector",
++	"thats all vector",
++	"goodbye vector",
++}
++
++// classifyEndConversationCmd is the pure phrase-matching decision behind
++// the kill phrase, split out so it's directly unit-testable with no
++// gRPC/HTTP/robot connection required -- same pattern as
++// classifySentryMode/decideConversationContinuation elsewhere in this
++// package.
++func classifyEndConversationCmd(voiceText string) bool {
++	lower := strings.ToLower(voiceText)
++	for _, phrase := range endConversationPhrases {
++		if strings.Contains(lower, phrase) {
++			return true
++		}
++	}
++	return false
++}
++
++// endConversationAckFn/endConversationGetRobotFn/endConversationSayFn are
++// package-level indirections so handleEndConversationCmd's orchestration
++// can be unit-tested without a real gRPC stream or robot connection.
++// Production code should never reassign these outside of tests.
++var (
++	endConversationAckFn = func(req interface{}, voiceText string) {
++		IntentPass(req, "intent_system_noaudio", voiceText, map[string]string{}, false)
++	}
++	endConversationGetRobotFn = vars.GetRobot
++	endConversationSayFn      = sayText
++)
++
++// handleEndConversationCmd is customIntentHandler's special case for
++// EndConversationCmdCustomIntentName (see matchIntentSend.go, alongside
++// the sentry_cmd_custom and intent_ask_hermes special cases). Acks the
++// intent stream immediately, resets any tracked conversation state for
++// this ESN (so no further auto-listen can fire), then speaks the goodbye
++// directly -- no LLM call, no further listen triggered.
++func handleEndConversationCmd(req interface{}, botSerial, voiceText string) {
++	endConversationAckFn(req, voiceText)
++
++	// Reset conversation state FIRST, before speaking, so a race with an
++	// in-flight MaybeContinueConversation from the previous turn can't
++	// re-open the mic after we've already said goodbye.
++	EndConversation(botSerial)
++	logger.Println("Bot " + botSerial + " end_conversation_custom matched - ending conversation mode for '" + voiceText + "'")
++
++	robot, err := endConversationGetRobotFn(botSerial)
++	if err != nil {
++		logger.Println("Bot " + botSerial + " end-conversation: conversation ended but couldn't get robot to speak goodbye: " + err.Error())
++		return
++	}
++	endConversationSayFn(robot, endConversationGoodbyeText)
++}
+diff --git a/chipper/pkg/wirepod/ttr/endconversationcmd_test.go b/chipper/pkg/wirepod/ttr/endconversationcmd_test.go
+new file mode 100644
+index 0000000..876ea78
+--- /dev/null
++++ b/chipper/pkg/wirepod/ttr/endconversationcmd_test.go
+@@ -0,0 +1,135 @@
++package wirepod_ttr
++
++import (
++	"testing"
++
++	"github.com/fforchino/vector-go-sdk/pkg/vector"
++)
++
++// TestClassifyEndConversationCmd covers the kill-phrase matching behind
++// ending conversation mode, including case-insensitivity, phrases embedded
++// in a longer sentence, and non-matches -- same style as
++// TestClassifySentryMode (sentrycmd_test.go).
++func TestClassifyEndConversationCmd(t *testing.T) {
++	cases := []struct {
++		name      string
++		voiceText string
++		want      bool
++	}{
++		{"end conversation vector exact", "end conversation vector", true},
++		{"end conversation bare", "end conversation", true},
++		{"that's all vector", "that's all vector", true},
++		{"thats all vector no apostrophe", "thats all vector", true},
++		{"goodbye vector", "goodbye vector", true},
++		{"uppercase", "GOODBYE VECTOR", true},
++		{"mixed case", "End Conversation Vector", true},
++		{"embedded in sentence", "ok that's all vector thanks", true},
++		{"end conversation embedded", "lets end conversation now", true},
++
++		{"unrelated phrase", "what's the weather today", false},
++		{"empty string", "", false},
++		{"goodbye alone no vector", "goodbye", false},
++		{"vector alone", "vector", false},
++		{"partial word", "conversational ability is great", false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			got := classifyEndConversationCmd(c.voiceText)
++			if got != c.want {
++				t.Fatalf("classifyEndConversationCmd(%q) = %v, want %v", c.voiceText, got, c.want)
++			}
++		})
++	}
++}
++
++// TestHandleEndConversationCmd_HappyPath verifies the full orchestration:
++// ack fires, conversation state is reset (via the real EndConversation,
++// not a stub, so this also exercises getConversationState afterward), and
++// the goodbye is spoken via sayText -- in that order, with NO LLM call
++// anywhere in the path (there is nothing to stub for an LLM call because
++// this handler never makes one).
++func TestHandleEndConversationCmd_HappyPath(t *testing.T) {
++	const esn = "test-esn-endconv"
++	// Seed an active conversation so we can verify it gets reset.
++	placeConversationState(ConversationState{ESN: esn, Active: true, ListenCount: 3})
++
++	var events []string
++
++	origAck, origGetRobot, origSay := endConversationAckFn, endConversationGetRobotFn, endConversationSayFn
++	defer func() {
++		endConversationAckFn, endConversationGetRobotFn, endConversationSayFn = origAck, origGetRobot, origSay
++		EndConversation(esn)
++	}()
++
++	endConversationAckFn = func(req interface{}, voiceText string) {
++		events = append(events, "ack")
++	}
++	endConversationGetRobotFn = func(botSerial string) (*vector.Vector, error) {
++		events = append(events, "getrobot")
++		return nil, nil
++	}
++	endConversationSayFn = func(robot *vector.Vector, text string) {
++		events = append(events, "say:"+text)
++	}
++
++	handleEndConversationCmd(nil, esn, "goodbye vector")
++
++	want := []string{"ack", "getrobot", "say:" + endConversationGoodbyeText}
++	if len(events) != len(want) {
++		t.Fatalf("events = %v, want %v", events, want)
++	}
++	for i := range want {
++		if events[i] != want[i] {
++			t.Fatalf("events[%d] = %q, want %q (full: %v)", i, events[i], want[i], events)
++		}
++	}
++
++	cs := getConversationState(esn)
++	if cs.Active || cs.ListenCount != 0 {
++		t.Fatalf("conversation state after kill phrase = %+v, want reset (Active=false, ListenCount=0)", cs)
++	}
++}
++
++// TestHandleEndConversationCmd_GetRobotErrorStillEndsConversation: if the
++// robot can't be reached to speak the goodbye, the conversation must
++// already be ended (it is, since EndConversation runs before the robot
++// lookup) and the handler must not panic.
++func TestHandleEndConversationCmd_GetRobotErrorStillEndsConversation(t *testing.T) {
++	const esn = "test-esn-endconv-err"
++	placeConversationState(ConversationState{ESN: esn, Active: true, ListenCount: 2})
++
++	var events []string
++
++	origAck, origGetRobot, origSay := endConversationAckFn, endConversationGetRobotFn, endConversationSayFn
++	defer func() {
++		endConversationAckFn, endConversationGetRobotFn, endConversationSayFn = origAck, origGetRobot, origSay
++		EndConversation(esn)
++	}()
++
++	endConversationAckFn = func(req interface{}, voiceText string) { events = append(events, "ack") }
++	endConversationGetRobotFn = func(botSerial string) (*vector.Vector, error) {
++		events = append(events, "getrobot-SHOULD-ERROR")
++		return nil, errVectorUnreachableForTest
++	}
++	endConversationSayFn = func(robot *vector.Vector, text string) {
++		events = append(events, "say-SHOULD-NOT-HAPPEN")
++	}
++
++	handleEndConversationCmd(nil, esn, "end conversation")
++
++	want := []string{"ack", "getrobot-SHOULD-ERROR"}
++	if len(events) != len(want) {
++		t.Fatalf("events = %v, want %v (no say after a getrobot error)", events, want)
++	}
++
++	cs := getConversationState(esn)
++	if cs.Active {
++		t.Fatalf("conversation state after kill phrase (getrobot error case) = %+v, want Active=false regardless", cs)
++	}
++}
++
++type endConversationTestErr struct{ msg string }
++
++func (e *endConversationTestErr) Error() string { return e.msg }
++
++var errVectorUnreachableForTest = &endConversationTestErr{"robot unreachable (test)"}
+diff --git a/chipper/pkg/wirepod/ttr/kgsim.go b/chipper/pkg/wirepod/ttr/kgsim.go
+index 9110271..30c9807 100644
+--- a/chipper/pkg/wirepod/ttr/kgsim.go
++++ b/chipper/pkg/wirepod/ttr/kgsim.go
+@@ -191,10 +191,6 @@ func CreateAIReq(transcribedText, esn string, gpt3tryagain, isKG bool) openai.Ch
+ }
+ 
+ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bool) (string, error) {
+-	// Captured at entry (not at speech-end) so the conversation-mode timeout
+-	// check (see conversation.go) measures wall-clock time since the user
+-	// actually spoke, including however long the LLM+TTS round trip takes.
+-	lastUserSpeechAt := time.Now()
+ 	start := make(chan bool)
+ 	stop := make(chan bool)
+ 	stopStop := make(chan bool)
+@@ -564,7 +560,26 @@ func StreamingKGSim(req interface{}, esn string, transcribedText string, isKG bo
+ 			// (flaky Wi-Fi) can't hang anything here. MaybeContinueConversation
+ 			// looks the robot back up by ESN itself (see connectRobotByESN
+ 			// in conversation.go), so only the ESN needs to be passed here.
+-			go MaybeContinueConversation(esn, fullfullRespText, lastUserSpeechAt)
++			// Fix (2026-10-15, Hermes; the owner: unlimited back-and-forth, end
++			// only on real silence or the kill phrase): the ORIGINAL design
++			// (2026-09-26d) passed lastUserSpeechAt (captured at StreamingKGSim's
++			// entry, i.e. BEFORE classify+LLM+TTS even ran) as the conversation
++			// timeout baseline, so decideConversationContinuation's "timeout"
++			// rule measured the ENTIRE round trip (STT->LLM->full TTS playback),
++			// not silence. With the qwen3-30b main model + multi-sentence TTS
++			// replies this routinely runs 10-20s+ BY ITSELF, so the 12s budget
++			// was already exhausted before the mic ever reopened -- confirmed
++			// live 2026-10-15 17:50-17:56 UTC: every single turn ended with
++			// reason="timeout", never reason="cap" or real silence. Pass a
++			// freshly-captured time.Now() instead, taken right here (i.e. the
++			// instant behavior control was released / speech just finished),
++			// so the 12s window now means what the file-header design note
++			// always intended: how long we're willing to wait with the mic
++			// open before giving up, not a bound on how long the round trip
++			// to produce that speech took. Real "the next utterance was
++			// silence/noaudio" detection is unaffected -- that's a separate
++			// ending condition entirely (see conversation.go's header).
++			go MaybeContinueConversation(esn, fullfullRespText, time.Now())
+ 		}
+ 	}
+ 	return "", nil
+diff --git a/chipper/pkg/wirepod/ttr/matchIntentSend.go b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+index ff76953..8212818 100755
+--- a/chipper/pkg/wirepod/ttr/matchIntentSend.go
++++ b/chipper/pkg/wirepod/ttr/matchIntentSend.go
+@@ -145,6 +145,17 @@ func customIntentHandler(req interface{}, voiceText string, botSerial string) bo
+ 						break
+ 					}
+ 
++					// End-conversation kill phrase (2026-10-15, Hermes) --
++					// see endconversationcmd.go for the full design note.
++					// Handled directly (not via the generic exec-script
++					// path), same pattern as SentryCmdCustomIntentName above,
++					// so the phrase matching is a pure, unit-tested Go function.
++					if c.Name == EndConversationCmdCustomIntentName {
++						handleEndConversationCmd(req, botSerial, voiceText)
++						successMatched = true
++						break
++					}
++
+ 					runCustomIntentExec(req, c, voiceText, botSerial)
+ 					successMatched = true
+ 					break
